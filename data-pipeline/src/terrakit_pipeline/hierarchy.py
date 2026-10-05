@@ -105,11 +105,49 @@ class PostalArea:
 
 
 @dataclass
+class PlaceName:
+    """
+    A localized name for one place.
+
+    `place_names` is keyed (place_id, lang), so a language has exactly one
+    authoritative name per place. Everything else — exonyms, historic names,
+    transliterations, colloquialisms — lives in place_alternate_names, which is
+    many-per-place and indexed by normalized name for search.
+    """
+
+    place_id: str
+    lang: str
+    name: str
+    name_norm: str
+    script: str | None
+    is_preferred: bool
+    #: GeoNames' isShortName. Distinct from is_preferred and both are needed:
+    #: 'tr:Türkiye Cumhuriyeti' is preferred, 'tr:Türkiye' is short, and a
+    #: country's display name is the second one. See names.py.
+    is_short: bool
+    source: str
+
+
+@dataclass(frozen=True)
+class AlternateNameRow:
+    """A search-only name. Never becomes a place's display name."""
+
+    place_id: str
+    name: str
+    name_norm: str
+    lang: str | None
+    class_: str
+    source: str
+
+
+@dataclass
 class BuildResult:
     places: list[Place] = field(default_factory=list)
     closure: list[ClosureRow] = field(default_factory=list)
     postal_codes: list[PostalCode] = field(default_factory=list)
     postal_areas: list[PostalArea] = field(default_factory=list)
+    place_names: list[PlaceName] = field(default_factory=list)
+    alternate_names: list[AlternateNameRow] = field(default_factory=list)
     stats: dict[str, int] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
 

@@ -46,7 +46,7 @@ No API key. No network call. No geographic database to build and maintain.
 | Data pipeline | **working** — builds TR, GE, DE, JP from live GeoNames data |
 | Package validation | **working** — §30 rules, zero errors on all four |
 | Reproducible builds | **verified** — byte-identical across runs |
-| Localized / alternate names | schema ready, ingestion not written |
+| Localized / exonym / historic names | **working** — 19.2 M upstream rows, streamed |
 | Rust CLI | specified ([`CLI_SPEC.md`](CLI_SPEC.md)), not built |
 | Swift SDK | specified ([`SDK_SPEC.md`](SDK_SPEC.md)), not built |
 | Kotlin SDK | specified, not built |
@@ -58,12 +58,22 @@ No API key. No network call. No geographic database to build and maintain.
 python3 -m terrakit_pipeline build TR --level postal
 ```
 
-| Country | Places | Postal codes | Package |
-|---|---|---|---|
-| TR | 5 091 | 2 953 | 6.0 MB |
-| DE | 11 957 | 10 813 | 13 MB |
-| JP | 3 428 | 142 577 | 53 MB |
-| GE | 315 | none published | 0.5 MB |
+| Country | Places | Postal codes | Localized names | Languages | zstd |
+|---|---|---|---|---|---|
+| TR | 5 091 | 2 953 | 20 769 | 245 | 1.6 MB |
+| DE | 11 957 | 10 813 | 49 305 | 289 | 3.9 MB |
+| JP | 3 428 | 142 577 | 15 455 | 320 | 3.9 MB |
+| GE | 315 | none published | 3 271 | 264 | 0.2 MB |
+
+Search now resolves historical and localized names, which is what SPEC §7 and §8 ask for:
+
+```text
+Terra.search("Constantinople")   ->  Istanbul   (class = historic)
+Terra.search("Byzantion")        ->  Istanbul   (German, historic)
+Terra.search("イスタンブール")      ->  Istanbul
+Terra.localizedName(for: .japanese, place) -> "イスタンブール"
+Terra.country("TR").name         ->  "Türkiye"  (not "Turkey")
+```
 
 ```bash
 ./scripts/test.sh                          # 4 suites, all passing
@@ -152,12 +162,10 @@ and SDKs beyond Swift and Kotlin.
 
 ### Known gaps in the current pipeline
 
-- **Localized names are not ingested.** `place_names` and `place_alternate_names` exist in the
-  schema and are validated, but `alternateNamesV2.zip` is not read yet, so search relies on
-  `places.name` alone. `Terra.search("Constantinople")` will not reach İstanbul until it is. This
-  is the next pipeline stage and the largest remaining gap.
-- **Country names are English.** GeoNames publishes `Turkey`; the endonym `Türkiye` needs
-  `alternateNames`.
+- **Short CJK queries.** The FTS5 trigram tokenizer needs three characters, so `search("東京")` finds
+  nothing while `search("東京都")` works. CJK names are short enough that this bites harder than it
+  does in Latin script; the reason it is not "fixed" is in
+  [`DATA_MODEL.md` §9](DATA_MODEL.md#9-search-schema).
 - **No boundaries and no geocoding**, per spec §46.
 
 Upstream data defects encountered while building the MVP countries — Georgia having no postal

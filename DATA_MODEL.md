@@ -523,11 +523,26 @@ CREATE INDEX idx_places_type   ON places(country_iso2, type, search_rank DESC, n
 level. Ranking in SQL at query time cannot use an index; sorting by a precomputed integer can. §16
 requires ranking and §40 requires <50 ms, and this is what makes both true.
 
-**Trigram tokenizer and short queries.** The trigram tokenizer needs at least 3 characters to
-produce a token, so `LIKE`/MATCH for one- and two-character queries degrades to a scan. Mitigation:
-prefix search on `idx_places_norm` covers short queries, and the SDK routes by query length —
-`length >= 3` to FTS5, otherwise to the B-tree prefix index. This is a documented behaviour of the
-API, not a hidden fallback.
+**Trigram tokenizer and short queries.** The trigram tokenizer needs at least 3 characters to produce
+a token, so `MATCH` on a one- or two-character query cannot match anything. Mitigation: the SDK routes
+by query length — `length >= 3` to FTS5, otherwise to the B-tree prefix index on `places.name_norm`.
+This is documented API behaviour, not a hidden fallback.
+
+**Known limitation: CJK queries under three characters.** The three-character floor is far more
+visible in Japanese, Chinese and Korean than in Latin script, because CJK place names are routinely two
+or three characters. Measured on the Japanese package:
+
+| Query | Result | Why |
+|---|---|---|
+| `東京都` (3) | Tokyo prefecture, Tokyo city, Chūō Ku | FTS5 trigram |
+| `東京` (2) | no match | two characters cannot form a trigram |
+| `大阪` (2), `京都` (2) | no match | same |
+
+The short-query fallback is an exact-or-prefix match on `places.name_norm`, so it finds a place whose
+stored name *is* `大阪` but will not find it from a two-character fragment of a longer name. This is
+recorded rather than worked around: fixing it would mean substring matching on short queries, which is
+a table scan, and SPEC §41 forbids that. The practical mitigation is that CJK users type the full name
+in the address fields that matter, and those are three characters or more.
 
 **Fuzzy ranking order** in `Terra.search`: exact `name_norm` match → prefix match → trigram match
 ordered by Double Metaphone distance → population rank. Deterministic, and tie-broken by `id` so two

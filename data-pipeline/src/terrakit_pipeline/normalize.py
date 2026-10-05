@@ -82,6 +82,54 @@ SPECIAL_CASES: dict[str, str] = {
 
 MARK_CATEGORIES = frozenset(("Mn", "Mc", "Me"))
 
+# Unicode name prefixes of scripts whose combining marks are load-bearing and
+# must NOT be stripped.
+#
+# NFKD decomposes Japanese kana carrying a voiced sound mark (dakuten) or a
+# semi-voice mark (handakuten) into a base kana plus a combining mark of category
+# Mn:
+#
+#     ガ → 'カ' + U+3099     ガザ → 'カサ'    (Gaza became "Kasa")
+#     バ → 'ハ' + U+3099     ヴ  → 'ウ' + U+3098
+#     パ → 'ハ' + U+309A
+#
+# A blanket "strip every Mn" therefore rewrites Japanese place names into
+# *different* place names, and worse, collapses distinct ones onto a single key:
+# カ and ガ both normalize to カ. Japan is an MVP country (spec section 52), so
+# this is a correctness bug, not a cosmetic one. It was found by building the
+# first Japanese package and watching a Japanese search return nothing.
+#
+# Stripping is therefore restricted to marks that sit on a Latin, Greek or
+# Cyrillic base letter — which is every case the step exists for
+# (é → e, İ → I, ё → е) — and marks elsewhere are preserved.
+_LATINISH_SCRIPTS = frozenset({"LATIN", "GREEK", "CYRILLIC"})
+
+
+def _strip_latinish_marks(text: str) -> str:
+    """
+    Remove combining marks that modify a Latin, Greek or Cyrillic base letter.
+
+    Walks the decomposed string rather than filtering on category, because the
+    category cannot say whether the mark is meaningful. U+0307 above 'I' is
+    decoration and must go, or 'İstanbul' and 'Istanbul' diverge; U+3099 above
+    'カ' is the difference between two kana and must stay, or 'ガザ' becomes a
+    different city.
+    """
+    out: list[str] = []
+    base_is_latinish = False
+    for char in text:
+        if unicodedata.category(char) in MARK_CATEGORIES:
+            if not base_is_latinish:
+                out.append(char)
+            continue
+        try:
+            script = unicodedata.name(char).split(" ", 1)[0]
+        except ValueError:
+            script = ""
+        base_is_latinish = script in _LATINISH_SCRIPTS
+        out.append(char)
+    return "".join(out)
+
 
 def normalize(input: str) -> str:
     """
@@ -95,8 +143,9 @@ def normalize(input: str) -> str:
     #    'final' has no canonical decomposition, so NFD would miss it.
     text = unicodedata.normalize("NFKD", input)
 
-    # 2. Strip combining marks.
-    text = "".join(c for c in text if unicodedata.category(c) not in MARK_CATEGORIES)
+    # 2. Strip combining marks, but only those on Latin/Greek/Cyrillic bases.
+    #    See _strip_latinish_marks: stripping every Mn destroys Japanese kana.
+    text = _strip_latinish_marks(text)
 
     # 3. Special-case substitutions.
     text = "".join(SPECIAL_CASES.get(c, c) for c in text)
@@ -112,17 +161,35 @@ def normalize(input: str) -> str:
 
     # 6-8. Separator handling: runs of non-letter/non-number become one space,
     #      then trim, then collapse internal runs.
+    #
+    # Combining marks count as word-internal. Any mark still present at this point
+    # survived step 2, which means it is load-bearing — a Japanese dakuten — and
+    # treating it as a separator turned ガザ into 'カ サ'. Marks on Latinish bases
+    # were already removed, so nothing reaches here that is mere decoration.
     out: list[str] = []
     pending_space = False
     for ch in text:
-        if unicodedata.category(ch)[0] in ("L", "N"):
+        category = unicodedata.category(ch)
+        if category[0] in ("L", "N", "M"):
             if pending_space and out:
                 out.append(" ")
             out.append(ch)
             pending_space = False
         else:
             pending_space = True
-    return "".join(out)
+    result = "".join(out)
+
+    # 9. Recompose to NFC.
+    #
+    # NFKD leaves Hangul as decomposed jamo — '서울' becomes 12 code points
+    # instead of 3 — and leaves Japanese kana in their decomposed two-code-point
+    # form. Both are self-consistent, so search would work, but the keys are
+    # larger than they need to be and two textually identical names written by
+    # different tools can differ in form.
+    #
+    # DATA_MODEL.md section 30 requires 'NFC-stable after NFKD', which is exactly
+    # this. It also makes idempotence hold trivially.
+    return unicodedata.normalize("NFC", result)
 
 
 def postal_normalize(code: str) -> str:

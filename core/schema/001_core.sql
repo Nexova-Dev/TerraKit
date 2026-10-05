@@ -170,6 +170,12 @@ CREATE TABLE place_names (
     name        TEXT NOT NULL,
     name_norm   TEXT NOT NULL,
     is_preferred INTEGER NOT NULL DEFAULT 0,
+    -- Both flags, because they select different things and they disagree.
+    -- GeoNames' isPreferredName is the FORMAL name ('de:Bundesrepublik
+    -- Deutschland'); isShortName is the everyday one ('de:Deutschland'). An SDK
+    -- that displays a country needs to tell them apart, and so does any consumer
+    -- choosing between a legal long form and the name people actually use.
+    is_short     INTEGER NOT NULL DEFAULT 0,
     source      TEXT NOT NULL,
     PRIMARY KEY (place_id, lang)
 ) WITHOUT ROWID;

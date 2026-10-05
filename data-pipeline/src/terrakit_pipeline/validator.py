@@ -380,16 +380,109 @@ def validate_package(db_path: Path) -> ValidationReport:
                 "places_rtree; nearest-location queries would silently miss some",
             )
 
-        # Search index coverage.
+        # Search index coverage. Every indexed name must be reachable.
+        #
+        # Counted as DISTINCT (name_norm, place_id), which is exactly one
+        # search_fts row. Counting raw rows instead compares 5 960 against 5 837
+        # and reports a false failure: the difference is alternates that normalize
+        # to the same string as their own place's name ('Adıyaman' tagged fr), and
+        # those collapse to one row on purpose — same place, same search key.
+        #
+        # Distinct on the pair, not on name_norm alone: Türkiye has both a city
+        # and a province named Istanbul, and both must be findable.
         fts_rows = conn.execute("SELECT COUNT(*) FROM search_fts").fetchone()[0]
         searchable = conn.execute(
-            "SELECT COUNT(*) FROM places WHERE LENGTH(name_norm) >= ?",
-            (SEARCH_KEY_MIN_LENGTH,),
+            """
+            SELECT COUNT(*) FROM (
+                SELECT DISTINCT name_norm, place_id FROM (
+                    SELECT name_norm, id AS place_id FROM places
+                    WHERE LENGTH(name_norm) >= ?
+                    UNION ALL
+                    SELECT name_norm, place_id FROM place_names
+                    WHERE LENGTH(name_norm) >= ?
+                    UNION ALL
+                    SELECT name_norm, place_id FROM place_alternate_names
+                    WHERE LENGTH(name_norm) >= ?
+                )
+            )
+            """,
+            (SEARCH_KEY_MIN_LENGTH, SEARCH_KEY_MIN_LENGTH, SEARCH_KEY_MIN_LENGTH),
         ).fetchone()[0]
         if fts_rows != searchable:
             report.add(
                 ERROR, "search-coverage",
-                f"{searchable} searchable places but {fts_rows} rows in search_fts",
+                f"{searchable} searchable names but {fts_rows} rows in search_fts; "
+                "a localized, exonym or historic name would resolve through "
+                "one API and miss through the other",
+            )
+
+        # Names: SPEC section 7 requires a fallback chain, which requires names.
+        report.stats["place_names"] = conn.execute(
+            "SELECT COUNT(*) FROM place_names"
+        ).fetchone()[0]
+        report.stats["alternate_names"] = conn.execute(
+            "SELECT COUNT(*) FROM place_alternate_names"
+        ).fetchone()[0]
+        report.stats["languages"] = conn.execute(
+            "SELECT COUNT(DISTINCT lang) FROM place_names"
+        ).fetchone()[0]
+
+        # An alternate name that is not in the trigram index is dead weight the
+        # size budget paid for and search cannot use.
+        orphaned_alternates = conn.execute(
+            """
+            SELECT COUNT(*) FROM place_alternate_names a
+            WHERE LENGTH(a.name_norm) >= ?
+              AND NOT EXISTS (
+                  SELECT 1 FROM search_fts f
+                  WHERE f.name_norm = a.name_norm AND f.place_id = a.place_id
+              )
+            """,
+            (SEARCH_KEY_MIN_LENGTH,),
+        ).fetchone()[0]
+        if orphaned_alternates:
+            report.add(
+                ERROR, "name-search-coverage",
+                f"{orphaned_alternates} alternate names are absent from search_fts",
+            )
+
+        # An alternate name pointing at a place that is not in the package is
+        # unresolvable data.
+        dangling_names = conn.execute(
+            """
+            SELECT COUNT(*) FROM place_names n
+            WHERE NOT EXISTS (SELECT 1 FROM places p WHERE p.id = n.place_id)
+            """
+        ).fetchone()[0]
+        dangling_names += conn.execute(
+            """
+            SELECT COUNT(*) FROM place_alternate_names a
+            WHERE NOT EXISTS (SELECT 1 FROM places p WHERE p.id = a.place_id)
+            """
+        ).fetchone()[0]
+        if dangling_names:
+            report.add(
+                ERROR, "name-integrity",
+                f"{dangling_names} name rows reference a place that is not in "
+                "the package",
+            )
+
+        # Name normalization must hold, or search misses on a silent mismatch.
+        # Sampled rather than exhaustive: normalize() is pure Python and running it
+        # over every row of a large package costs more than the check is worth.
+        bad_alternate_norm = 0
+        sampled_alternates = 0
+        for (raw, stored) in conn.execute(
+            "SELECT name, name_norm FROM place_alternate_names LIMIT 20000"
+        ):
+            sampled_alternates += 1
+            if normalize(raw) != stored:
+                bad_alternate_norm += 1
+        if bad_alternate_norm:
+            report.add(
+                ERROR, "denormalization-drift",
+                f"{bad_alternate_norm} of {sampled_alternates} sampled alternate "
+                "names have name_norm != normalize(name)",
             )
     finally:
         conn.close()

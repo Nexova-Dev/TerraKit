@@ -284,7 +284,61 @@ class PackageWriter:
                 "closure_rows": len(build.closure),
                 "postal_codes": len(build.postal_codes),
                 "postal_areas": len(build.postal_areas),
+                "place_names": len(build.place_names),
+                "alternate_names": len(build.alternate_names),
             }
+        )
+
+    def _insert_names(self, build: BuildResult) -> None:
+        """
+        Populate place_names and place_alternate_names.
+
+        Inserted before the search indexes, because place_alternate_names is what
+        makes an exonym findable: `Terra.search("Constantinople")` resolves
+        through place_alternate_names → places.id, and without those rows the
+        query returns nothing while looking like it worked.
+        """
+        conn = self.conn
+        assert conn is not None
+
+        conn.executemany(
+            """
+            INSERT INTO place_names (
+                place_id, lang, script, name, name_norm,
+                is_preferred, is_short, source
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    n.place_id, n.lang, n.script, n.name, n.name_norm,
+                    int(n.is_preferred), int(n.is_short), n.source,
+                )
+                for n in sorted(
+                    build.place_names, key=lambda n: (n.place_id, n.lang)
+                )
+            ],
+        )
+
+        # place_alternate_names is keyed (place_id, name, lang, class) WITHOUT
+        # ROWID, so NULL lang needs an explicit '' rather than NULL: SQLite
+        # treats NULLs as distinct in a UNIQUE index, which would allow the same
+        # name to be inserted twice.
+        conn.executemany(
+            """
+            INSERT INTO place_alternate_names (
+                place_id, name, name_norm, lang, class, source
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    row.place_id, row.name, row.name_norm,
+                    row.lang or "", row.class_, row.source,
+                )
+                for row in sorted(
+                    build.alternate_names,
+                    key=lambda r: (r.place_id, r.lang or "", r.class_, r.name),
+                )
+            ],
         )
 
     def _insert_search_indexes(self, build: BuildResult) -> None:
@@ -295,6 +349,44 @@ class PackageWriter:
         """
         conn = self.conn
         assert conn is not None
+
+        self._insert_names(build)
+
+        # Every searchable name reaches the trigram index: the place's own name,
+        # every localized name in place_names, and every exonym or historic name
+        # in place_alternate_names.
+        #
+        # place_names matters most here and was the omission. Istanbul's
+        # `ja:イスタンブール` lives in place_names, not in place_alternate_names,
+        # so indexing only the alternates left Japanese search returning nothing
+        # while `localizedName(for: .japanese)` worked — one API finding the place
+        # and the other not, from the same package.
+        #
+        # SPEC section 8 requires that searching in any language reaches the place,
+        # so the index has to cover all three tables.
+        rows: list[tuple[str, str, str]] = [
+            (p.name_norm, search_key_unaccented(p.name), p.id) for p in build.places
+        ]
+        own_norms = {place.id: place.name_norm for place in build.places}
+        for localized in build.place_names:
+            if localized.name_norm == own_norms.get(localized.place_id):
+                # Already indexed as the place's own name.
+                continue
+            rows.append(
+                (
+                    localized.name_norm,
+                    search_key_unaccented(localized.name),
+                    localized.place_id,
+                )
+            )
+        for alternate in build.alternate_names:
+            rows.append(
+                (
+                    alternate.name_norm,
+                    search_key_unaccented(alternate.name),
+                    alternate.place_id,
+                )
+            )
 
         # Only names of 3+ characters reach search_fts.
         #
@@ -308,25 +400,27 @@ class PackageWriter:
         conn.executemany(
             "INSERT INTO search_fts (name_norm, name_norm_unaccented, place_id) "
             "VALUES (?, ?, ?)",
-            [
-                (p.name_norm, search_key_unaccented(p.name), p.id)
-                for p in build.places
-                if len(p.name_norm) >= SEARCH_KEY_MIN_LENGTH
-            ],
+            sorted(
+                {row for row in rows if len(row[0]) >= SEARCH_KEY_MIN_LENGTH}
+            ),
         )
 
         from .phonetic import double_metaphone  # local import: heavy table
 
-        rows: set[tuple[str, str]] = set()
+        phonetic_rows: set[tuple[str, str]] = set()
         for place in build.places:
             for code in double_metaphone(place.name):
                 if code:
-                    rows.add((code, place.id))
+                    phonetic_rows.add((code, place.id))
+        for alternate in build.alternate_names:
+            for code in double_metaphone(alternate.name):
+                if code:
+                    phonetic_rows.add((code, alternate.place_id))
         conn.executemany(
             "INSERT OR IGNORE INTO phonetic_codes (code, place_id) VALUES (?, ?)",
-            sorted(rows),
+            sorted(phonetic_rows),
         )
-        self.counts["phonetic_codes"] = len(rows)
+        self.counts["phonetic_codes"] = len(phonetic_rows)
 
     def _insert_rtree(self, build: BuildResult) -> None:
         """

@@ -57,9 +57,14 @@ INSERT INTO places VALUES('place:geonames:7732185',3,'district',3,'TR','admin:TR
 INSERT INTO places VALUES('place:geonames:323777',4,'city',3,'TR','admin:TR-07','Antalya','antalya',NULL,'geonames',36.8969,30.7133,1335000,'Europe/Istanbul','TRY',1000000,'geonames_cities500','323777','2026-10-01T00:00:00Z');
 INSERT INTO places VALUES('place:geonames:13589441',5,'neighborhood',4,'TR','place:geonames:323777','Fener','fener',NULL,'geonames',36.8841,30.7052,12000,'Europe/Istanbul','TRY',400000,'geonames_cities500','13589441','2026-10-01T00:00:00Z');
 
-INSERT INTO place_names VALUES('place:geonames:323777','tr','Latn','Antalya','antalya',1,'geonames_primary');
-INSERT INTO place_names VALUES('place:geonames:323777','en','Latn','Antalya','antalya',0,'geonames_primary');
-INSERT INTO place_alternate_names VALUES('place:geonames:323777','Constantinople','constantinople','en','exonym','geonames');
+-- place_names carries is_preferred AND is_short: GeoNames sets both on
+-- 'de:Deutschland' (pref=1 short=1) and only short on 'de:Bundesrepublik', and a
+-- country's display name is the latter's rival, not its preferred form.
+INSERT INTO place_names VALUES('place:geonames:323777','tr','Latn','İstanbul','istanbul',1,0,'geonames_alternatenames');
+INSERT INTO place_names VALUES('place:geonames:323777','ja','Jpan','イスタンブール','イスタンブール',1,0,'geonames_alternatenames');
+INSERT INTO place_names VALUES('place:geonames:323777','en','Latn','Antalya','antalya',0,0,'geonames_primary');
+INSERT INTO place_alternate_names VALUES('place:geonames:323777','Constantinople','constantinople','en','historic','geonames_alternatenames');
+INSERT INTO place_alternate_names VALUES('place:geonames:323777','Βυζάντιο','βυζαντιο','el','historic','geonames_alternatenames');
 
 -- full closure, materialized at build time (DATA_MODEL.md section 4)
 INSERT INTO place_closure VALUES
@@ -81,11 +86,18 @@ INSERT INTO postal_codes VALUES('postal:TR:07160','TR','07160','07160','place:ge
 INSERT INTO postal_areas VALUES('postal:TR:07160','place:geonames:7732185',1);
 INSERT INTO postal_areas VALUES('postal:TR:07160','admin:TR-07',0);
 
+-- Every searchable name reaches the index: the place's own name, every
+-- localized name, and every exonym or historic name. Indexing only the
+-- alternates left Japanese search returning nothing.
 INSERT INTO search_fts(name_norm,name_norm_unaccented,place_id) VALUES
  ('antalya','antalya','place:geonames:323777'),
  ('alanya','alanya','place:geonames:7732185'),
  ('turkiye','turkiye','country:TR'),
- ('fener','fener','place:geonames:13589441');
+ ('fener','fener','place:geonames:13589441'),
+ ('istanbul','istanbul','place:geonames:323777'),
+ ('イスタンブール','イスタンブール','place:geonames:323777'),
+ ('constantinople','constantinople','place:geonames:323777'),
+ ('βυζαντιο','βυζαντιο','place:geonames:323777');
 INSERT INTO phonetic_codes VALUES('ANTL','place:geonames:323777'),('ALN','place:geonames:7732185'),('FNR','place:geonames:13589441');
 
 -- Every place with coordinates, because that is exactly what the validator
@@ -148,9 +160,33 @@ echo "spec section 7 / DATA_MODEL.md 5.2: localized and alternate names"
 expect "English name resolves" \
   "$(q "SELECT name FROM place_names WHERE place_id='place:geonames:323777' AND lang='en';")" \
   "Antalya"
-expect "exonym reaches the same place" \
+expect "Japanese name resolves, dakuten intact" \
+  "$(q "SELECT name FROM place_names WHERE place_id='place:geonames:323777' AND lang='ja';")" \
+  "イスタンブール"
+expect "is_preferred and is_short are independent columns" \
+  "$(q "SELECT COUNT(*) FROM pragma_table_info('place_names') WHERE name IN ('is_preferred','is_short');")" \
+  "2"
+expect "historic exonym reaches the same place" \
   "$(q "SELECT p.name FROM place_alternate_names a JOIN places p ON p.id=a.place_id WHERE a.name_norm='constantinople';")" \
   "Antalya"
+# The query string is normalized before MATCH, exactly as SDK_SPEC.md section 3
+# requires. FTS5 takes the string verbatim, so passing the raw Greek with its tonos
+# finds nothing while the same word normalized does — which is the whole reason
+# the SDK owns the only normalization it performs.
+expect "non-Latin exonym searchable once the query is normalized" \
+  "$(q "SELECT p.name FROM search_fts f JOIN places p ON p.id=f.place_id WHERE search_fts MATCH 'βυζαντιο';")" \
+  "Antalya"
+expect "the tonos is stripped, so an unaccented Greek query also matches" \
+  "$(q "SELECT COUNT(DISTINCT p.id) FROM search_fts f JOIN places p ON p.id=f.place_id WHERE search_fts MATCH 'βυζαντιο';")" \
+  "1"
+
+echo "spec section 7: localized search reaches the place"
+expect "searching in Japanese finds it" \
+  "$(q "SELECT COUNT(DISTINCT p.id) FROM search_fts f JOIN places p ON p.id=f.place_id WHERE search_fts MATCH 'イスタンブール';")" \
+  "1"
+expect "searching a historic name finds it" \
+  "$(q "SELECT COUNT(DISTINCT p.id) FROM search_fts f JOIN places p ON p.id=f.place_id WHERE search_fts MATCH 'Constantinople';")" \
+  "1"
 
 echo
 echo "spec section 16: phonetic precomputation (ADR-003)"

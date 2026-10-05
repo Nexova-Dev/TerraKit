@@ -11,9 +11,12 @@ usable audit record rather than a status line.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
+from .alternate_names import detect_script, read_alternate_names
 from .download import fetch_all
 from .geonames import (
     read_admin1,
@@ -23,6 +26,7 @@ from .geonames import (
     read_settlements,
 )
 from .hierarchy import build_hierarchy
+from .names import attach_names, primary_language_of
 from .normalize import normalize, postal_normalize
 from .package_builder import (
     PackageMetadata,
@@ -54,6 +58,18 @@ def main(argv: list[str] | None = None) -> int:
     build_cmd.add_argument(
         "--skip-download", action="store_true", help="use cached sources only"
     )
+    build_cmd.add_argument(
+        "--no-names",
+        action="store_true",
+        help="skip alternateNamesV2 ingestion (localized, exonym and historic names)",
+    )
+    build_cmd.add_argument(
+        "--max-name-rows",
+        type=int,
+        default=None,
+        help="only read the first N rows of alternateNamesV2 (development aid; "
+             "the resulting package is incomplete and must not be published)",
+    )
 
     validate_cmd = sub.add_parser("validate", help="validate a built package")
     validate_cmd.add_argument("path", type=Path, help="package directory")
@@ -78,11 +94,17 @@ def cmd_build(args) -> int:
     # postal feature unavailable instead of returning empty results that look
     # like the country has no postal codes.
     want_postal = level in ("postal", "full")
+    want_names = not args.no_names
 
     print("[1/7] sources")
     if args.skip_download:
         print("  skipped (--skip-download), using cache")
-        sources = _load_cached(args.cache, country, need_postal=want_postal)
+        sources = _load_cached(
+            args.cache,
+            country,
+            need_postal=want_postal,
+            need_alternate_names=want_names,
+        )
         # Postal is optional even here: an absent cache entry means the same
         # thing it means online, that this country has no upstream postal data.
         missing = {"countryInfo", "admin1", "admin2", "cities500"} - set(sources)
@@ -94,7 +116,12 @@ def cmd_build(args) -> int:
             )
             return 2
     else:
-        sources = fetch_all(args.cache, country, need_postal=want_postal)
+        sources = fetch_all(
+            args.cache,
+            country,
+            need_postal=want_postal,
+            need_alternate_names=want_names,
+        )
 
     for key, item in sorted(sources.items()):
         state = "cached" if item.from_cache else "downloaded"
@@ -189,15 +216,88 @@ def cmd_build(args) -> int:
     for warning in build.warnings[:10]:
         print(f"  ! {warning}")
 
-    print("\n[4/7] validate (pre-build)")
+    # Before stage 4: name validity is evaluated against the run epoch, never
+    # the wall clock, or a rebuild would change as names become current.
+    epoch = default_source_date_epoch()
+
+    print("\n[4/9] attach names")
+    if "alternateNames" in sources:
+        country_geonameids = {
+            int(place.source_row_id)
+            for place in build.places
+            if place.source_row_id and place.source_row_id.isdigit()
+        }
+        country_language = primary_language_of(info.languages)
+        print(
+            f"  streaming alternateNamesV2 for {len(country_geonameids):,} places"
+        )
+        print(f"  primary language: {country_language or '(none declared)'}")
+
+        # Script of each place's own name, so a romanization of a non-Latin place
+        # can be told apart from a genuine exonym.
+        primary_scripts = {
+            int(place.source_row_id): detect_script(place.name)
+            for place in build.places
+            if place.source_row_id and place.source_row_id.isdigit()
+        }
+
+        alternate_rows, name_stats = read_alternate_names(
+            sources["alternateNames"].path,
+            country_geonameids=country_geonameids,
+            primary_scripts=primary_scripts,
+            valid_at=datetime.fromtimestamp(epoch, tz=UTC).date(),
+            from_normalize=normalize,
+            max_rows=args.max_name_rows,
+            log=lambda message: print(f"  {message}"),
+        )
+        print(name_stats.render())
+
+        build.place_names, build.alternate_names, attach_stats = attach_names(
+            build.places,
+            alternate_rows,
+            country_language=country_language,
+            from_normalize=normalize,
+            country_geonameid=info.geonameid,
+        )
+        build.stats.update(attach_stats)
+        print(
+            f"  attached: {attach_stats['place_names']:,} localized names in "
+            f"{attach_stats['languages']} languages, "
+            f"{attach_stats['alternate_names']:,} searchable alternates"
+        )
+        print(
+            f"    historic: {attach_stats['historic_names']:,}, "
+            f"transliterations: {attach_stats['transliterations']:,}, "
+            f"exonyms: {attach_stats['exonyms']:,}"
+        )
+        if attach_stats["display_names_promoted"]:
+            print(
+                "  country display name promoted to the local name "
+                "(countryInfo publishes English)"
+            )
+    else:
+        print("  alternateNamesV2 unavailable; no localized names")
+        build.place_names = []
+        build.alternate_names = []
+
+    # The display name may have changed, so the search index and phonetic codes
+    # are built from the post-attachment values. Build before this point and the
+    # package indexes 'Turkey' while places.name says 'Türkiye'.
+    country_row = next(
+        (p for p in build.places if p.level == 1 and p.parent_id is None), None
+    )
+    if country_row is not None:
+        print(f"  country row name: {country_row.name!r} "
+              f"(name_norm={country_row.name_norm!r})")
+
+    print("\n[5/9] validate (pre-build)")
     report = validate_build(build, country)
     print(report.render())
     if not report.ok:
         print("\nBuild aborted: validation errors present.", file=sys.stderr)
         return 1
 
-    print("\n[5/7] write SQLite")
-    epoch = default_source_date_epoch()
+    print("\n[6/9] write SQLite")
     # Dataset version derives from input content, so a rebuild from the same
     # sources yields the same version AND the same bytes.
     combined = "".join(sorted(item.sha256 for item in sources.values()))
@@ -270,22 +370,34 @@ def cmd_build(args) -> int:
         country_rows=country_rows,
         source_rows=source_rows,
     )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     size = db_path.stat().st_size
     print(f"  {db_path}")
     print(f"  {size:,} bytes ({size / 1024 / 1024:.1f} MB)")
     print(f"  {manifest_path}")
 
-    print("\n[6/7] validate (written package)")
+    print("\n[7/9] validate (written package)")
     package_report = validate_package(db_path)
     print(package_report.render())
     if not package_report.ok:
         print("\nPackage written but invalid; not publishable.", file=sys.stderr)
         return 1
 
-    print("\n[7/7] done")
+    print("\n[8/9] summarize")
     print(f"  package: {out_dir}")
-    print(f"  license: CC-BY-4.0 (GeoNames)")
+    print(f"  license: {manifest['license']}")
+    print(
+        f"  names:   {build.stats.get('place_names', 0):,} localized in "
+        f"{build.stats.get('languages', 0)} languages, "
+        f"{build.stats.get('alternate_names', 0):,} searchable alternates"
+    )
+    print(
+        f"  history: {build.stats.get('historic_names', 0):,} historic, "
+        f"{build.stats.get('transliterations', 0):,} transliterations, "
+        f"{build.stats.get('exonyms', 0):,} exonyms"
+    )
     print("  next: compress with zstd -19, sign manifest.json, publish to registry")
+    print("\n[9/9] done")
     return 0
 
 
@@ -416,7 +528,13 @@ def _is_zip(path: Path) -> bool:
         return handle.read(4) == b"PK\x03\x04"
 
 
-def _load_cached(cache_dir: Path, country: str, *, need_postal: bool) -> dict:
+def _load_cached(
+    cache_dir: Path,
+    country: str,
+    *,
+    need_postal: bool,
+    need_alternate_names: bool = True,
+) -> dict:
     """Reconstruct source descriptors from the cache, without touching the network."""
     from datetime import UTC, datetime
 
@@ -432,6 +550,8 @@ def _load_cached(cache_dir: Path, country: str, *, need_postal: bool) -> dict:
     }
     if need_postal:
         wanted["postal"] = f"{country}.zip"
+    if need_alternate_names:
+        wanted["alternateNames"] = "alternateNamesV2.zip"
 
     out: dict[str, DownloadedSource] = {}
     for key, filename in wanted.items():

@@ -36,6 +36,9 @@ run_suite "phonetic conformance" \
 run_suite "pipeline unit tests" \
   python3 data-pipeline/tests/test_pipeline.py
 
+run_suite "name ingestion" \
+  python3 data-pipeline/tests/test_names.py
+
 run_suite "package schema smoke test" \
   bash scripts/test_schema.sh
 

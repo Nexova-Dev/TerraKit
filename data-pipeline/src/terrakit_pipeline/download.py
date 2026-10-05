@@ -176,6 +176,7 @@ def fetch_all(
     country_iso2: str,
     *,
     need_postal: bool = True,
+    need_alternate_names: bool = True,
     log=print,
 ) -> dict[str, DownloadedSource]:
     """Fetch every source a `cities`/`postal` package needs."""
@@ -197,6 +198,19 @@ def fetch_all(
             out["postal"] = source
         else:
             log(f"    not published upstream: {source.unavailable_reason}")
+
+    if need_alternate_names:
+        spec = SOURCES["alternateNames"]
+        log(f"  fetching {spec.filename} (205 MB, shared by every country)")
+        # One archive for the whole planet, ~19.2 million rows, so it is worth
+        # announcing rather than silently spending the user's bandwidth and disk.
+        # Optional because a country package without names is still useful; the
+        # build then records the reduced feature set honestly.
+        source = downloader.fetch(spec, optional=True)
+        if source.available:
+            out["alternateNames"] = source
+        else:
+            log(f"    not available: {source.unavailable_reason}")
 
     provenance = cache_dir / "provenance.json"
     if provenance.exists():

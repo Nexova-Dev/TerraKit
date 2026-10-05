@@ -262,7 +262,9 @@ Terra.search("Istanbul", language: .english)                  // localized + exo
 the FTS5 trigram index; shorter ones go to the B-tree prefix index, because a
 trigram tokenizer cannot index a 2-character token
 ([`DATA_MODEL.md` §9](DATA_MODEL.md#9-search-schema)). Same answer either way,
-different plan.
+different plan — except in CJK, where names are routinely two characters, so
+`search("東京")` finds nothing while `search("東京都")` works. The limitation is
+recorded rather than papered over, because the fix would be a scan.
 
 ### 6.1 Autocomplete
 
@@ -323,10 +325,35 @@ requested language → locale fallback (tr-TR → tr → default) → "en" → l
 Missing translations are normal, not an error. SPEC §7 says so and a package must
 never fail validation because a place has one name.
 
-A caveat to be explicit about: until `alternateNamesV2` is ingested
-([`data-pipeline/sources/README.md`](data-pipeline/sources/README.md)), packages
-carry a single name per place, so `localizedName` returns the English name for
-every language. The API is specified; the data is not there yet.
+Packages now carry localized names: measured on the built MVP packages, TR has
+20 769 names across 245 languages, DE 49 305 across 289, JP 15 455 across 320. So
+`localizedName(for: .japanese)` on İstanbul returns `イスタンブール`, and
+`country("TR").name` is `Türkiye` rather than GeoNames' English `Turkey`.
+
+`names(for:)` returns every variant, each with its `PlaceNameClass` so a caller can
+tell a formal name from an everyday one — GeoNames flags both, and they disagree:
+
+| Language | Name | Class |
+|---|---|---|
+| `tr` | `Türkiye` | `.short` |
+| `en` | `Republic of Türkiye` | `.preferred` |
+| `de` | `Türkei` | `.preferred` |
+| `ka` | `თურქეთი` | `.preferred` |
+
+```swift
+public enum PlaceNameClass: String, Sendable {
+    case preferred    // formal: 'Republic of Türkiye'
+    case short        // everyday: 'Türkiye'
+    case exonym      // name used by speakers of another language
+    case historic     // 'Constantinople'
+    case transliteration // romanization of a non-Latin name
+    case colloquial
+}
+```
+
+`place.name` is the **everyday** form where the source distinguishes one. Displaying
+`country.name` must not produce `Bundesrepublik Deutschland`, which is what preferring
+the formal flag would have given.
 
 ---
 

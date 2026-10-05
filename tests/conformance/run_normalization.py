@@ -31,6 +31,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "data-pipeline" / "src"))
 
 from terrakit_pipeline.normalize import (  # noqa: E402
+    _LATINISH_SCRIPTS,
     MARK_CATEGORIES,
     normalize,
     postal_normalize,
@@ -93,6 +94,46 @@ def check_search_key() -> list[str]:
     return failures
 
 
+def check_latinish_marks_stripped() -> list[str]:
+    """
+    No combining mark may survive on a Latin, Greek or Cyrillic base.
+
+    Replaces the old blanket "no combining marks in the output" invariant, which
+    was wrong rather than merely incomplete. NFKD decomposes Japanese kana with a
+    dakuten into a base kana plus an Mn mark, so requiring zero marks would have
+    rejected the correct output for ガザ and forced implementations to destroy
+    Japanese place names. The invariant that actually matters is narrower: marks
+    on Latinish bases are decoration and must go; marks elsewhere are the
+    difference between two distinct kana and must stay.
+    """
+    import unicodedata
+
+    failures: list[str] = []
+    for vector in load_vectors():
+        result = normalize(vector["input"])
+        base_is_latinish = False
+        for char in result:
+            if unicodedata.category(char) in MARK_CATEGORIES:
+                if base_is_latinish:
+                    failures.append(
+                        f"  #{vector['n']} kept a combining mark on a Latinish "
+                        f"base: {result!r}"
+                    )
+                    break
+                continue
+            try:
+                script = unicodedata.name(char).split(" ", 1)[0]
+            except ValueError:
+                script = ""
+            base_is_latinish = script in _LATINISH_SCRIPTS
+    return failures
+
+
+def load_vectors() -> list[dict]:
+    fixture = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+    return fixture.get("vectors", [])
+
+
 def check_fuzz_idempotence() -> list[str]:
     """
     Seeded fuzz over mixed scripts.
@@ -124,10 +165,22 @@ def check_fuzz_idempotence() -> list[str]:
             if len(failures) > 10:
                 break
             continue
-        if any(unicodedata.category(c) in MARK_CATEGORIES for c in once):
-            failures.append(f"  combining mark survived: {raw!r} -> {once!r}")
-            if len(failures) > 10:
-                break
+        base_is_latinish = False
+        for c in once:
+            if unicodedata.category(c) in MARK_CATEGORIES:
+                if base_is_latinish:
+                    failures.append(
+                        f"  Latinish combining mark survived: {raw!r} -> {once!r}"
+                    )
+                    break
+                continue
+            try:
+                script = unicodedata.name(c).split(" ", 1)[0]
+            except ValueError:
+                script = ""
+            base_is_latinish = script in _LATINISH_SCRIPTS
+        if failures and len(failures) > 10:
+            break
         if any(unicodedata.category(c) == "Cc" for c in once):
             failures.append(f"  control character survived: {raw!r} -> {once!r}")
             if len(failures) > 10:
@@ -199,12 +252,25 @@ def main() -> int:
         result = normalize(vector["input"])
         if normalize(result) != result:
             invariant_failures.append(f"  #{n} not idempotent: {result!r}")
-        if any(unicodedata.category(c) in MARK_CATEGORIES for c in result):
-            invariant_failures.append(f"  #{n} output contains combining marks")
+        base_is_latinish = False
+        for c in result:
+            if unicodedata.category(c) in MARK_CATEGORIES:
+                if base_is_latinish:
+                    invariant_failures.append(
+                        f"  #{n} kept a combining mark on a Latinish base"
+                    )
+                    break
+                continue
+            try:
+                script = unicodedata.name(c).split(" ", 1)[0]
+            except ValueError:
+                script = ""
+            base_is_latinish = script in _LATINISH_SCRIPTS
         if any(unicodedata.category(c) == "Cc" for c in result):
             invariant_failures.append(f"  #{n} output contains control characters")
 
     # Pipeline-only functions.
+    latinish_failures = check_latinish_marks_stripped()
     postal_failures = check_postal_normalization()
     search_key_failures = check_search_key()
     fuzz_failures = check_fuzz_idempotence()
@@ -224,6 +290,10 @@ def main() -> int:
         if invariant_failures:
             print("\nINVARIANT FAILURES:", file=sys.stderr)
             for failure in invariant_failures:
+                print(failure, file=sys.stderr)
+        if latinish_failures:
+            print("\nLATINISH MARK FAILURES:", file=sys.stderr)
+            for failure in latinish_failures:
                 print(failure, file=sys.stderr)
         if postal_failures:
             print("\nPOSTAL NORMALIZATION FAILURES:", file=sys.stderr)
@@ -245,7 +315,7 @@ def main() -> int:
         return 1
 
     print(
-        "invariants: idempotence, no combining marks, no control characters — OK\n"
+        "invariants: idempotence, Latinish marks stripped, no control characters — OK\n"
         "postal_normalize: 8/8 cases OK\n"
         "search_key_unaccented: 5/5 cases OK\n"
         "fuzz: 2000 seeded mixed-script inputs idempotent — OK"

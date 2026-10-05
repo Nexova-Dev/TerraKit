@@ -13,6 +13,7 @@ warning so an upstream correction is noticed rather than silently consumed.
 | `admin2` | `admin2Codes.txt` | level-3 administrative areas, keyed by geonameid |
 | `cities500` | `cities500.zip` → `cities500.txt` | settlements of 500+, with population and IANA timezone |
 | `postal` | `{ISO2}.zip` → `{ISO2}.txt` | postal codes and their areas — **not published for every country** |
+| `alternateNames` | `alternateNamesV2.zip` → `alternateNamesV2.txt` | localized names, exonyms, historic names, transliterations |
 
 Base URL: `https://download.geonames.org/export/`
 
@@ -71,11 +72,54 @@ wrong. The readers assert the count so a future format change fails loudly.
 endonym arrives through `alternateNames`, which is not yet ingested. See
 [`ARCHITECTURE.md` §13](../../ARCHITECTURE.md#13-open-questions).
 
-## Not used
+## alternateNamesV2 — the largest source, and the most dangerous
 
-`alternateNamesV2.zip` (~200 MB) is what would supply localized names, exonyms
-and transliterations — the content behind `place_names` and
-`place_alternate_names` in [`DATA_MODEL.md` §5](../../DATA_MODEL.md#5-names-localization-and-normalization).
-Those tables are in the schema and validated, but the ingestion step is not
-written yet, so search currently relies on `places.name` alone. This is the next
-pipeline stage and the biggest remaining gap.
+`alternateNamesV2.zip` is **205 MB compressed, 785 MB of text, 19 219 334 rows**, and it holds
+every alternate name for every country and language on Earth. The archive also contains
+`iso-languagecodes.txt`, which is the authoritative list of ISO 639 codes and is used to tell a real
+language from a sentinel.
+
+Every value of `isolanguage` was measured against that list rather than guessed:
+
+| Category | Examples | Count | Handling |
+|---|---|---|---|
+| no language | *(empty)* | 7 343 131 | dropped unless the name is historic |
+| identifier | `wkdt` (Wikidata), `link` (URL), `post`, `unlc`, `lauc`, `iata`, `uicn`, `geoid`, `nuts` | ~2.2 M | dropped — not names |
+| **bibliographic ISO 639-2** | `ger`, `fre`, `dut`, `cze`, `geo`, `chi`, `gre`, `alb` | small | **remapped** to `de`, `fr`, `nl`, `cs`, `ka`, `zh`, `el`, `sq` |
+| BCP-47 with script/region | `zh-Hans`, `zh-Hant`, `pt-BR`, `en-GB`, `de-CH` | ~20 000 | kept unchanged |
+| real languages | 653 distinct, `zh` and `en` largest | ~13 M | kept |
+
+Three findings worth keeping.
+
+**Two identifier classes are marked `isPreferredName` upstream.** The real file contains
+`link | https://en.wikipedia.org/wiki/Istanbul | isPreferred=1`. A naive ingest can therefore put a
+Wikipedia URL in a name column. This is why `IDENTIFIER_CLASSES` exists and why the `link` mapping
+is checked before any preferred-name logic.
+
+**Bibliographic codes are not junk.** `ger`, `fre`, `dut`, `geo`, `chi` and 13 more are absent from
+`iso-languagecodes.txt`, so a validity check that only consults that file classifies them as garbage
+and discards them. They are real languages. Without the remapping, every German name GeoNames tags
+`ger` is dropped and `Terra.localizedName(for: .german)` returns the English name.
+
+**Roughly 70% of a country's rows are unverified user submissions.** For Türkiye, 13 088 of 34 728
+rows were dropped for having no language and no discipline flag — misspellings ("Antaliyah",
+"Antayla", "Istambul") and bare Wikipedia links. Shipping those would make `search("Istanbul")`
+match a typo as though it were a distinct place, and would put unverified data in an
+authoritative-looking table.
+
+### Column layout
+
+```text
+1 alternateNameId   2 geonameid   3 isolanguage   4 alternate_name
+5 isPreferredName   6 isShortName  7 isColloquial  8 isHistoric
+9 from              10 to
+```
+
+`from` and `to` are validity dates, evaluated against the pipeline run's epoch and never the wall
+clock — a build whose content depends on today's date is not reproducible.
+
+### Reading cost
+
+One pass, 8.2 s. The geonameid is extracted from the raw bytes and tested against the country's set
+*before* any UTF-8 decode, because decoding 19 million lines to find one field is minutes of work
+for no benefit.

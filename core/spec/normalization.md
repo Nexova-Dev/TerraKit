@@ -239,7 +239,10 @@ Each SDK ships a test that:
 1. loads `tests/fixtures/normalization.json`;
 2. asserts exact byte equality of every vector;
 3. asserts `normalize(normalize(x)) == normalize(x)` for all vectors (idempotence);
-4. asserts no output contains a combining mark or a control character;
+4. asserts no output contains a combining mark **on a Latin, Greek or Cyrillic base**, and no control
+   character. The earlier blanket "no combining marks" invariant was itself wrong: it encoded the
+   assumption that section 2 exists to correct, and enforcing it would have forced every
+   implementation to destroy Japanese kana;
 5. runs as part of `swift test` and `./gradlew test`, with no network access.
 
 A single divergence is a build failure. It is not acceptable to "fix" it by adjusting the fixture:

@@ -93,6 +93,14 @@ SOURCES: dict[str, SourceSpec] = {
         license_url="https://creativecommons.org/licenses/by/4.0/",
         attribution="GeoNames postal codes, CC BY 4.0",
     ),
+    "alternateNames": SourceSpec(
+        id="geonames_alternatenames",
+        url="https://download.geonames.org/export/dump/alternateNamesV2.zip",
+        filename="alternateNamesV2.zip",
+        license="CC-BY-4.0",
+        license_url="https://creativecommons.org/licenses/by/4.0/",
+        attribution="GeoNames alternate names, CC BY 4.0",
+    ),
 }
 
 
