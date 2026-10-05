@@ -1,0 +1,124 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  conformance:
+    name: Conformance (no network)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install SQLite with FTS5 and R*Tree
+        # ubuntu-latest ships SQLite 3.45 with both extensions, which clears the
+        # 3.34 floor the trigram tokenizer needs (ADR-003).
+        run: sudo apt-get update && sudo apt-get install -y sqlite3
+
+      - name: Check SQLite capabilities
+        run: |
+          sqlite3 :memory: \
+            "CREATE VIRTUAL TABLE t USING fts5(x, tokenize='trigram');" \
+            "CREATE VIRTUAL TABLE r USING rtree(id, a, b, c, d);" \
+            "SELECT 'fts5 trigram + rtree available';" || {
+              echo "::error::SQLite lacks FTS5 trigram or R*Tree"
+              exit 1
+            }
+
+      - name: Run test suites
+        run: ./scripts/test.sh
+
+  reproducible:
+    name: Reproducible build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Build the same country twice and compare checksums
+        # PACKAGE_FORMAT.md section 12 makes this a testable property. Without
+        # the test, "reproducible" is a claim.
+        #
+        # Georgia, not Türkiye: it is small enough to build twice inside a CI
+        # budget and it exercises the optional-postal path, since GeoNames
+        # publishes no postal file for it.
+        run: ./scripts/check_reproducible.sh GE --level postal --download
+
+  package-validation:
+    name: MVP package validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # A package with a validation error is not publishable (SPEC section 30),
+      # so CI refuses to produce one.
+      - name: Build and validate every MVP country
+        run: |
+          set -euo pipefail
+          for COUNTRY in TR GE DE; do
+            echo "::group::$COUNTRY"
+            PYTHONPATH=data-pipeline/src python3 -m terrakit_pipeline build \
+              "$COUNTRY" \
+              --level postal \
+              --out "$PWD/.ci-datasets" \
+              --repo-root "$PWD"
+            echo "::endgroup::"
+          done
+
+      - name: Assert zero errors in every package
+        run: |
+          set -euo pipefail
+          for DIR in .ci-datasets/terrakit-data-*; do
+            echo "--- $DIR"
+            PYTHONPATH=data-pipeline/src python3 -m terrakit_pipeline \
+              validate "$DIR" --json
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mvp-packages
+          path: .ci-datasets/*/manifest.json
+          retention-days: 7
+
+  future:
+    name: Swift SDK
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Placeholder until sdk/swift exists
+        run: |
+          if [ -d sdk/swift/Sources ]; then
+            cd sdk/swift && swift build && swift test
+          else
+            echo "sdk/swift not implemented yet; skipping"
+          fi
+
+  future-kotlin:
+    name: Kotlin SDK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Placeholder until sdk/kotlin exists
+        run: |
+          if [ -f sdk/kotlin/settings.gradle.kts ]; then
+            cd sdk/kotlin && ./gradlew build
+          else
+            echo "sdk/kotlin not implemented yet; skipping"
+          fi

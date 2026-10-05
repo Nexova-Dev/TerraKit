@@ -112,7 +112,12 @@ CREATE TABLE places (
     id             TEXT PRIMARY KEY,      -- 'place:geonames:3054643'
     rowid_int      INTEGER UNIQUE,        -- internal, for R*Tree only; never exposed in SDK APIs
     type           TEXT NOT NULL,
-    level          INTEGER NOT NULL CHECK (level BETWEEN 2 AND 7),
+    -- Level 1 is the country row itself (the hierarchy anchor), level 2 its top
+    -- administrative area, up to 7. SPEC section 4 puts Country inside the
+    -- hierarchy, so a settlement with a broken upstream admin1 reference can
+    -- still attach to something real instead of becoming an orphan.
+    level          INTEGER NOT NULL CHECK (level BETWEEN 1 AND 7),
+    -- The country row satisfies this by being the only level-1 place.
     country_iso2   TEXT NOT NULL REFERENCES countries(iso2),
     parent_id      TEXT REFERENCES places(id),
     name           TEXT NOT NULL,

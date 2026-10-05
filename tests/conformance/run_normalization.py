@@ -1,118 +1,165 @@
 #!/usr/bin/env python3
 """
-Reference implementation of the TerraKit normalization spec.
+Normalization conformance runner.
 
-This is the ORACLE. Each SDK implements the same algorithm independently
-(core/spec/normalization.md), and CI compares all of them against the fixture
-in tests/fixtures/normalization.json.
+This is the ORACLE. The Swift, Kotlin and Rust implementations are checked
+against it via tests/fixtures/normalization.json.
 
-If this implementation and an SDK disagree, one of them is wrong. Never edit
-the fixture to resolve a disagreement — see CONTRIBUTING.md section 5.1.
+The algorithm itself lives in
+data-pipeline/src/terrakit_pipeline/normalize.py — deliberately NOT copied
+here. A second Python copy would drift, and normalization drift means the SDKs
+return different results for the same query string, which is exactly what the
+conformance suite exists to prevent.
+
+If this and an SDK disagree, one of them is wrong. Never edit the fixture to
+resolve a disagreement. See CONTRIBUTING.md section 5.1.
 
 Usage:
     python3 tests/conformance/run_normalization.py [--verbose]
-
-Exit codes:
-    0  all vectors pass
-    1  a vector failed
-    2  fixture missing or malformed
+    python3 tests/conformance/run_normalization.py --print-impls
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 import unicodedata
 from pathlib import Path
 
-# --- core/spec/normalization.md section 3 ---------------------------------
-# Applied after NFKD + mark stripping, BEFORE case folding.
-SPECIAL_CASES: dict[str, str] = {
-    "ß": "ss",   # ß LATIN SMALL LETTER SHARP S
-    "ẞ": "ss",   # ẞ LATIN CAPITAL LETTER SHARP S
-    "æ": "ae", "ǽ": "ae",
-    "œ": "oe", "Œ": "oe",
-    "ø": "o", "Ø": "o",
-    "đ": "d", "Đ": "d",
-    "ð": "d", "Ð": "d",
-    "þ": "th", "Þ": "th",
-    "ł": "l", "Ł": "l",
-    "ı": "i",            # Turkish dotless i
-    "İ": "i",            # Turkish dotted I
-    "ħ": "h", "Ħ": "h",
-    "ŋ": "ng", "Ŋ": "ng",
-    "ŧ": "t", "Ŧ": "t",
-    "ə": "e",
-    "­": "",       # soft hyphen U+00AD, removed
-    "‐": "-", "‑": "-", "‒": "-", "–": "-",
-    "—": "-", "―": "-", "−": "-",
-    # Apostrophes and quotation marks are REMOVED, not turned into spaces
-    # (spec section 6): D'Angelo -> dangelo, not "d angelo".
-    "'": "", "’": "", "‘": "", "ʼ": "", "`": "",
-    " ": " ",       # no-break space
-}
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT / "data-pipeline" / "src"))
 
-MARK_CATEGORIES = frozenset(("Mn", "Mc", "Me"))
+from terrakit_pipeline.normalize import (  # noqa: E402
+    MARK_CATEGORIES,
+    normalize,
+    postal_normalize,
+    search_key_unaccented,
+)
+
+FIXTURE_PATH = REPO_ROOT / "tests" / "fixtures" / "normalization.json"
 
 
-def normalize(input: str) -> str:
-    """core/spec/normalization.md — normative algorithm."""
-    # 1. NFKD decomposition
-    text = unicodedata.normalize("NFKD", input)
-
-    # 2. Strip combining marks (Mn, Mc, Me)
-    text = "".join(c for c in text if unicodedata.category(c) not in MARK_CATEGORIES)
-
-    # 3. Special-case substitutions
-    text = "".join(SPECIAL_CASES.get(c, c) for c in text)
-
-    # 4. Full Unicode case folding.
-    #    str.casefold() implements CaseFolding.txt F + C mappings.
-    #    T (Turkic) mappings are NOT applied — see spec section 4.
-    text = text.casefold()
-
-    # 5. Transliteration is pipeline-only. SDKs do not transliterate.
-    #    (Python's casefold would mangle non-Latin, but spec vectors 29/30
-    #    expect CJK and Georgian to pass through unchanged, and the pipeline
-    #    transliteration step is applied to source data, not to SDK queries.)
-
-    # 6-8. Separator handling: runs of non-letter/non-number -> single space,
-    #      then trim, then collapse internal runs.
-    out: list[str] = []
-    pending_space = False
-    for ch in text:
-        if unicodedata.category(ch)[0] in ("L", "N"):
-            if pending_space and out:
-                out.append(" ")
-            out.append(ch)
-            pending_space = False
-        else:
-            pending_space = True
-    return "".join(out)
-
-
-def postal_normalize(code: str) -> str:
+def check_postal_normalization() -> list[str]:
     """
-    Stricter postal-code normalization, DATA_MODEL.md section 8.
+    DATA_MODEL.md section 8: postal codes use a stricter normalizer.
 
-    Letters and digits only. No separator collapsing, so 'SW1A 1AA' and
-    'SW1A1AA' both reach 'sw1a1aa'. Leading zeros are preserved.
+    These assertions live here rather than in the fixture because
+    postal_normalize is a second public function of the pipeline, not an SDK
+    concern. SDKs receive the indexed code_norm value and never normalize a
+    postal code at query time.
     """
-    text = unicodedata.normalize("NFKC", code)
-    return "".join(c for c in text if c.isalnum()).casefold()
+    cases = [
+        ("SW1A 1AA", "sw1a1aa", "GB spaced and compact forms must collide"),
+        ("SW1A1AA", "sw1a1aa", "GB compact"),
+        ("SW1A-1AA", "sw1a1aa", "GB hyphenated"),
+        ("07160", "07160", "TR leading zero preserved"),
+        ("07000", "07000", "TR leading zero preserved"),
+        ("10115", "10115", "DE"),
+        ("  07000  ", "07000", "TR whitespace trimmed"),
+        ("sw1a 1aa", "sw1a1aa", "GB lowercase input"),
+    ]
+    failures = []
+    for raw, expected, reason in cases:
+        actual = postal_normalize(raw)
+        if actual != expected:
+            failures.append(
+                f"  postal_normalize({raw!r}) = {actual!r}, expected {expected!r}\n"
+                f"      reason: {reason}"
+            )
+    return failures
+
+
+def check_search_key() -> list[str]:
+    """
+    The second trigram column strips separators entirely, so a single-token
+    query like 'AtatürkCaddesi' can match 'Atatürk Caddesi'.
+    """
+    cases = [
+        ("Atatürk Caddesi", "ataturkcaddesi", "spaces removed"),
+        ("Ataturk Caddesi", "ataturkcaddesi", "unaccented equivalent"),
+        ("New York", "newyork", "ascii"),
+        ("東京都", "東京都", "CJK unchanged"),
+        ("SW1A 1AA", "sw1a1aa", "postal-like input"),
+    ]
+    failures = []
+    for raw, expected, reason in cases:
+        actual = search_key_unaccented(raw)
+        if actual != expected:
+            failures.append(
+                f"  search_key_unaccented({raw!r}) = {actual!r}, "
+                f"expected {expected!r}\n      reason: {reason}"
+            )
+    return failures
+
+
+def check_fuzz_idempotence() -> list[str]:
+    """
+    Seeded fuzz over mixed scripts.
+
+    Catches divergences in codepoints nobody thought to put in a hand-written
+    vector. Deterministic: same seed on every machine, so a failure reproduces.
+    """
+    import random
+
+    rng = random.Random(20261005)
+    alphabet = (
+        "abcdeıİiIßẞøØłŁğüşçöĞÜŞÇÖ"
+        "АБВГДЕЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ"
+        "αβγδεζηθικλμνξοπρστυφχψω"
+        "აბგდევზთიკლმნოპჟრსტუფქღყშჩცძწჭხჯჰ"
+        "あいうえお東京İstanbul-"
+    )
+    failures = []
+    for i in range(2000):
+        raw = "".join(rng.choice(alphabet) for _ in range(rng.randint(1, 24)))
+        once = normalize(raw)
+        twice = normalize(once)
+        if once != twice:
+            failures.append(
+                f"  not idempotent: {raw!r}\n"
+                f"      once:  {once!r}\n"
+                f"      twice: {twice!r}"
+            )
+            if len(failures) > 10:
+                break
+            continue
+        if any(unicodedata.category(c) in MARK_CATEGORIES for c in once):
+            failures.append(f"  combining mark survived: {raw!r} -> {once!r}")
+            if len(failures) > 10:
+                break
+        if any(unicodedata.category(c) == "Cc" for c in once):
+            failures.append(f"  control character survived: {raw!r} -> {once!r}")
+            if len(failures) > 10:
+                break
+    return failures
 
 
 def main() -> int:
-    verbose = "--verbose" in sys.argv or "-v" in sys.argv
-    fixture_path = (
-        Path(__file__).resolve().parents[1] / "fixtures" / "normalization.json"
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--verbose", "-v", action="store_true")
+    parser.add_argument(
+        "--print-impls",
+        action="store_true",
+        help="print the reference implementations for porting to Swift/Kotlin/Rust",
     )
-    if not fixture_path.exists():
-        print(f"error: fixture not found: {fixture_path}", file=sys.stderr)
+    args = parser.parse_args()
+
+    if args.print_impls:
+        from terrakit_pipeline import normalize as mod
+
+        print(f"SPECIAL_CASES ({len(mod.SPECIAL_CASES)} entries):")
+        for key, value in mod.SPECIAL_CASES.items():
+            print(f"  U+{ord(key):04X} {key!r} -> {value!r}")
+        print(f"\nMARK_CATEGORIES = {sorted(MARK_CATEGORIES)}")
+        return 0
+
+    if not FIXTURE_PATH.exists():
+        print(f"error: fixture not found: {FIXTURE_PATH}", file=sys.stderr)
         return 2
 
     try:
-        fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+        fixture = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         print(f"error: fixture is malformed: {exc}", file=sys.stderr)
         return 2
@@ -123,6 +170,7 @@ def main() -> int:
         return 2
 
     failures: list[str] = []
+
     for vector in vectors:
         n = vector["n"]
         raw = vector["input"]
@@ -131,23 +179,64 @@ def main() -> int:
 
         if actual != expected:
             failures.append(
-                f"  #{n:>2} {vector['covers']}\n"
+                f"  #{n} {vector.get('covers', '')}\n"
                 f"      input:    {raw!r}\n"
                 f"      expected: {expected!r}\n"
                 f"      actual:   {actual!r}"
             )
-        elif verbose:
+        elif args.verbose:
             print(f"  ok  #{n:>2} {raw!r} -> {actual!r}")
 
-    total = len(vectors)
-    passed = total - len(failures)
+    passed = len(vectors) - len(
+        [f for f in failures if f.strip().startswith("#")]
+    )
+    print(f"normalization conformance: {passed}/{len(vectors)} vectors passed")
 
-    print(f"normalization conformance: {passed}/{total} vectors passed")
+    # Spec section 8 invariants.
+    invariant_failures = []
+    for vector in vectors:
+        n = vector["n"]
+        result = normalize(vector["input"])
+        if normalize(result) != result:
+            invariant_failures.append(f"  #{n} not idempotent: {result!r}")
+        if any(unicodedata.category(c) in MARK_CATEGORIES for c in result):
+            invariant_failures.append(f"  #{n} output contains combining marks")
+        if any(unicodedata.category(c) == "Cc" for c in result):
+            invariant_failures.append(f"  #{n} output contains control characters")
 
-    if failures:
-        print("\nFAILURES:", file=sys.stderr)
-        for failure in failures:
-            print(failure, file=sys.stderr)
+    # Pipeline-only functions.
+    postal_failures = check_postal_normalization()
+    search_key_failures = check_search_key()
+    fuzz_failures = check_fuzz_idempotence()
+
+    extra_total = (
+        len(invariant_failures)
+        + len(postal_failures)
+        + len(search_key_failures)
+        + len(fuzz_failures)
+    )
+
+    if failures or extra_total:
+        if failures:
+            print("\nVECTOR FAILURES:", file=sys.stderr)
+            for failure in failures:
+                print(failure, file=sys.stderr)
+        if invariant_failures:
+            print("\nINVARIANT FAILURES:", file=sys.stderr)
+            for failure in invariant_failures:
+                print(failure, file=sys.stderr)
+        if postal_failures:
+            print("\nPOSTAL NORMALIZATION FAILURES:", file=sys.stderr)
+            for failure in postal_failures:
+                print(failure, file=sys.stderr)
+        if search_key_failures:
+            print("\nSEARCH KEY FAILURES:", file=sys.stderr)
+            for failure in search_key_failures:
+                print(failure, file=sys.stderr)
+        if fuzz_failures:
+            print("\nFUZZ FAILURES (seeded, reproducible):", file=sys.stderr)
+            for failure in fuzz_failures:
+                print(failure, file=sys.stderr)
         print(
             "\nDo not edit the fixture to make these pass. "
             "See CONTRIBUTING.md section 5.1.",
@@ -155,23 +244,12 @@ def main() -> int:
         )
         return 1
 
-    # Invariant checks, per spec section 8.
-    for vector in vectors:
-        result = normalize(vector["input"])
-        if normalize(result) != result:
-            failures.append(f"  #{vector['n']} not idempotent")
-        if any(unicodedata.category(c) in MARK_CATEGORIES for c in result):
-            failures.append(f"  #{vector['n']} output contains combining marks")
-        if any(unicodedata.category(c) == "Cc" for c in result):
-            failures.append(f"  #{vector['n']} output contains control characters")
-
-    if failures:
-        print("\nINVARIANT FAILURES:", file=sys.stderr)
-        for failure in failures:
-            print(failure, file=sys.stderr)
-        return 1
-
-    print("invariants: idempotence, no combining marks, no control characters — OK")
+    print(
+        "invariants: idempotence, no combining marks, no control characters — OK\n"
+        "postal_normalize: 8/8 cases OK\n"
+        "search_key_unaccented: 5/5 cases OK\n"
+        "fuzz: 2000 seeded mixed-script inputs idempotent — OK"
+    )
     return 0
 
 

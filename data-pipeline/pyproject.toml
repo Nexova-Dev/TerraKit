@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "terrakit-pipeline"
+version = "0.1.0"
+description = "GeoNames ingestion and TerraKit package generation"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+
+# Zero runtime dependencies, on purpose.
+#
+# The pipeline reads tab-separated text and writes SQLite, both of which are in
+# the standard library or in the SQLite library itself. Every dependency here is
+# a supply-chain risk and an upgrade to track, and none buys anything the task
+# does not already need.
+#
+# Ruled out deliberately:
+#   geopandas / shapely / GDAL — needed only for boundary polygons, which are
+#     out of MVP scope (spec section 46). Adding them now means shipping a C
+#     toolchain for data the pipeline never reads.
+#   requests — urllib covers five GETs with a User-Agent.
+#   jsonschema — the manifest is written by this code and validated by the SDK.
+#   pydantic — the records are frozen dataclasses; validation is explicit and
+#     the failure messages point at the offending column.
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.6",
+    "mypy>=1.11",
+]
+
+[project.scripts]
+terrakit-pipeline = "terrakit_pipeline.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # bugbear
+    "SIM",  # simplify
+    "RUF",  # ruff-specific
+]
+ignore = [
+    "E501",   # line length is handled by the formatter
+    "SIM108", # a ternary is not always clearer than an if
+]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true

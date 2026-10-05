@@ -1,0 +1,5 @@
+# Intentionally empty: the pipeline has zero runtime dependencies.
+# See data-pipeline/pyproject.toml for why, and what was ruled out.
+#
+# dev tooling is declared as an optional extra instead:
+#   pip install -e 'data-pipeline[dev]'
