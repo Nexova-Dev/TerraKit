@@ -65,21 +65,23 @@ Follow it. Work out of sequence creates work for everyone else.
 2. data-pipeline/        ingest → normalize → validate → publish             done
 3. cli/                  read-only commands; add/install over the registry   done
 4. registry/             static index + object storage                       done
-5. cli/                  remove, update, cache, bundle                       next
-6. sdk/swift/            query engine over the produced package
-7. sdk/kotlin/           same surface, conformance-tested against Swift
-8. Remaining countries   US, GB — plus JP in the test set
-9. search depth          autocomplete ranking, boundary polygons
+5. cli/                  add, remove, update                                 done
+6. cli/                  cache, bundle, install                              next
+7. sdk/swift/            query engine over the produced package
+8. sdk/kotlin/           same surface, conformance-tested against Swift
+9. Remaining countries   US, GB — plus JP in the test set
+10. search depth         autocomplete ranking, boundary polygons
 ```
 
 The registry came before the remaining CLI commands because they cannot be built or tested without
 it: `remove` and `update` are both built on the resolution `add` records.
 
-`terrakit add` is complete — download, verify, atomic install.
-[`scripts/test_registry.sh`](scripts/test_registry.sh) builds real packages, publishes them, and
-then attacks the result: a flipped byte, a missing signature, a manifest edited after signing, and
-a package signed by an untrusted key must each be refused with exit `3` and install nothing. Run it
-after touching [`cli/src/commands.rs`](cli/src/commands.rs),
+`add`, `remove` and `update` are complete.
+[`scripts/test_registry.sh`](scripts/test_registry.sh) builds real packages, publishes them,
+installs, updates and removes them, and then attacks the result: a flipped byte, a missing
+signature, a manifest edited after signing, and a package signed by an untrusted key must each be
+refused with exit `3` and install nothing. A damaged install must be reported rather than called
+up to date. Run it after touching [`cli/src/commands.rs`](cli/src/commands.rs),
 [`cli/src/install.rs`](cli/src/install.rs), [`cli/src/signature.rs`](cli/src/signature.rs) or
 [`tools/build_registry.py`](tools/build_registry.py).
 
@@ -87,7 +89,7 @@ after touching [`cli/src/commands.rs`](cli/src/commands.rs),
 TERRAKIT_CACHE=~/.cache/terrakit/sources bash scripts/test_registry.sh
 ```
 
-Steps 6 and 7 are conformance-tested against the **same package bytes**. An implementation that
+Steps 7 and 8 are conformance-tested against the **same package bytes**. An implementation that
 passes with its own fixture and diverges from the other SDK is not done.
 
 ---

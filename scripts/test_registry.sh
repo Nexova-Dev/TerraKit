@@ -127,6 +127,17 @@ new_project() {
   (cd "$WORK/$name" && "$BIN" init >/dev/null)
 }
 
+# Run the binary inside a named project directory.
+#
+# `new_project` cds in a subshell, so it does not change the script's own working directory.
+# Calling `$BIN` bare afterwards ran it from the repository root, where there is no
+# terrakit.json, and every such call exited 6 with "no terrakit.json found" -- which looks like a
+# registry failure and is not one.
+in_project() {
+  local name="$1"; shift
+  (cd "$WORK/$name" && "$BIN" "$@")
+}
+
 printf '\n\033[1m=== installing\033[0m\n'
 first_cc="$(echo "$PKGS" | cut -d' ' -f1)"
 new_project ok-install
@@ -267,6 +278,142 @@ assert_exit 4 "a country with no published package reports not-found" \
   bash -c "cd '$WORK/requests' && '$BIN' add ZW --registry '$REGISTRY'"
 assert_exit 1 "--offline refuses to fetch rather than reporting not-found" \
   bash -c "cd '$WORK/requests' && '$BIN' add $first_cc --offline --registry '$REGISTRY'"
+
+printf '\n\033[1m=== update\033[0m\n'
+# A second published version of the same package, so `update` has something to move to.
+#
+# Produced with the real publisher rather than by hand-editing the manifest: hand-editing left
+# manifestPath, downloadPath and the signature describing the *old* version, which made the
+# first attempt at this fixture fail for reasons that had nothing to do with update. Re-running
+# `publish` recomputes the digests and re-signs, so the second version is exactly what a second
+# CI run would produce.
+second_version="2026.10.2+aaaa"
+first_release="$(ls -d "$WORK/releases/terrakit-data-$CC_LOWER-"* | head -1)"
+second_release="$WORK/releases/terrakit-data-$CC_LOWER-${second_version/+/-}"
+cp -R "$first_release" "$second_release"
+rm -f "$second_release/signature.json" "$second_release"/*.zst
+python3 - "$second_release/manifest.json" "$second_version" <<'PYEOF'
+import json, pathlib, sys
+path, version = pathlib.Path(sys.argv[1]), sys.argv[2]
+manifest = json.loads(path.read_text())
+manifest["version"] = version
+path.write_text(json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False) + "\n")
+PYEOF
+PYTHONPATH=data-pipeline/src python3 -m terrakit_pipeline publish "$second_release" \
+  --sign-key keys/dev-ed25519.pem --sign-key-id terrakit-dev-2026 >/dev/null
+
+python3 tools/build_registry.py "$WORK/releases" --out "$WORK/registry-v2" \
+  --base-url https://registry.invalid >/dev/null
+R2="file://$WORK/registry-v2"
+
+new_project update
+# Installed from the ORIGINAL registry, which only has the older version. Installing from
+# $REGISTRY-v2 would have picked the newest, and `update --check` would then correctly report
+# "up to date" while the test expected "update available".
+#
+# `add` records the pin `^<version>`, and `update` stays inside it — a 2099.x target would be
+# outside `^2026.10.1` and update would correctly decline to move. The second version is a
+# patch-level release within the same major, which is what a dataset update actually looks like.
+in_project update add "$first_cc" --registry "$REGISTRY" --cache-dir "$WORK/cache-u" >/dev/null 2>&1
+assert_exit 0 "update --check succeeds" \
+  bash -c "cd '$WORK/update' && '$BIN' update --check --registry '$R2' --cache-dir '$WORK/cache-u'"
+assert_contains "update available" "update --check reports the pending version" \
+  bash -c "cd '$WORK/update' && '$BIN' update --check --registry '$R2' --cache-dir '$WORK/cache-u'"
+before=$(ls "$WORK/update/.terrakit/packages/$first_cc" | wc -l | tr -d ' ')
+if [[ "$before" == "1" ]]; then
+  ok "update --check changed nothing on disk"
+else
+  bad "update --check left $before version directories"
+fi
+
+assert_exit 0 "update applies" \
+  bash -c "cd '$WORK/update' && '$BIN' update --registry '$R2' --cache-dir '$WORK/cache-u'"
+after=$(ls "$WORK/update/.terrakit/packages/$first_cc" 2>/dev/null | wc -l | tr -d ' ')
+if [[ "$after" == "1" ]]; then
+  ok "the superseded version is removed, so search cannot return a place twice"
+else
+  bad "after update, $after version directories remain"
+fi
+assert_contains "$second_version" "the installed package is the new version" \
+  bash -c "cd '$WORK/update' && '$BIN' list"
+assert_exit 0 "the updated package still validates" \
+  bash -c "cd '$WORK/update' && '$BIN' validate"
+
+assert_exit 0 "update is idempotent" \
+  bash -c "cd '$WORK/update' && '$BIN' update --registry '$R2' --cache-dir '$WORK/cache-u'"
+assert_contains "up to date" "a second update reports nothing to do" \
+  bash -c "cd '$WORK/update' && '$BIN' update --registry '$R2' --cache-dir '$WORK/cache-u'"
+
+new_project update-to
+in_project update-to add "$first_cc" --registry "$REGISTRY" --cache-dir "$WORK/cache-u" >/dev/null 2>&1
+assert_exit 0 "update --to pins a specific version" \
+  bash -c "cd '$WORK/update-to' && '$BIN' update --to '$second_version' --registry '$R2' --cache-dir '$WORK/cache-u'"
+assert_contains "$second_version" "update --to installed the requested version" \
+  bash -c "cd '$WORK/update-to' && '$BIN' list"
+
+printf '\n\033[1m=== remove\033[0m\n'
+new_project remove
+in_project remove add "$first_cc" --registry "$R2" --cache-dir "$WORK/cache-r" >/dev/null 2>&1
+assert_exit 0 "remove uninstalls" \
+  bash -c "cd '$WORK/remove' && '$BIN' remove '$first_cc' --cache-dir '$WORK/cache-r'"
+if [[ -d "$WORK/remove/.terrakit/packages/$first_cc" ]]; then
+  bad "the package directory survived removal"
+else
+  ok "the package directory is gone"
+fi
+assert_contains '"resolution": {}' "terrakit.json no longer references the package" \
+  bash -c "cat '$WORK/remove/terrakit.json'"
+assert_exit 6 "removing a country that is not installed reports not-installed" \
+  bash -c "cd '$WORK/remove' && '$BIN' remove '$first_cc' --cache-dir '$WORK/cache-r'"
+assert_exit 2 "remove with no country is a usage error" \
+  bash -c "cd '$WORK/remove' && '$BIN' remove --cache-dir '$WORK/cache-r'"
+
+# The shared cache outlives removal by default: that is what makes it worth sharing.
+new_project cache-keep
+in_project cache-keep add "$first_cc" --registry "$R2" --cache-dir "$WORK/cache-s" >/dev/null 2>&1
+in_project cache-keep remove "$first_cc" --cache-dir "$WORK/cache-s" >/dev/null 2>&1
+cached=$(find "$WORK/cache-s/artifacts" -name '*.zst' 2>/dev/null | wc -l | tr -d ' ')
+if [[ "$cached" != "0" ]]; then
+  ok "the download cache survives removal by default"
+else
+  bad "removal deleted the shared cache without --prune"
+fi
+assert_contains "cached" "a warm cache is used instead of re-downloading" \
+  bash -c "cd '$WORK/cache-keep' && '$BIN' add '$first_cc' --registry '$R2' --cache-dir '$WORK/cache-s'"
+
+# Reinstalled by the warm-cache assertion above, so there is something to remove. Removing it
+# first and then pruning would exit 6, which is correct behaviour and the wrong test.
+assert_exit 0 "remove --prune succeeds" \
+  bash -c "cd '$WORK/cache-keep' && '$BIN' remove '$first_cc' --prune --cache-dir '$WORK/cache-s'"
+cached=$(find "$WORK/cache-s/artifacts" -name '*.zst' 2>/dev/null | wc -l | tr -d ' ')
+if [[ "$cached" == "0" ]]; then
+  ok "--prune drops entries no installed package references"
+else
+  bad "--prune left $cached unreferenced cache entries"
+fi
+
+printf '\n\033[1m=== refusing to trust a damaged install\033[0m\n'
+new_project damaged
+# Every step uses the ORIGINAL registry, which publishes one version. Against the two-version
+# registry, `--force` would have installed the newer version *alongside* the corrupt one and left
+# the corrupt directory in place — correct for `add`, which does not manage other versions, and
+# the reason the assertions below would have failed for a reason unrelated to damage.
+#
+# That distinction is worth stating: `add` adds, `update` updates. Removing a superseded version
+# is `update`'s job, because it is the operation that knows a version is superseded.
+in_project damaged add "$first_cc" --registry "$REGISTRY" --cache-dir "$WORK/cache-d" >/dev/null 2>&1
+printf 'X' | dd "of=$WORK/damaged/.terrakit/packages/$first_cc/$VERSION_SEGMENT/data.sqlite" \
+  bs=1 seek=2048 conv=notrunc 2>/dev/null
+assert_exit 3 "an installed package that fails verification is not reported as up to date" \
+  bash -c "cd '$WORK/damaged' && '$BIN' add '$first_cc' --registry '$REGISTRY' --cache-dir '$WORK/cache-d'"
+assert_contains "modified" "the refusal says the package is damaged, not merely present" \
+  bash -c "cd '$WORK/damaged' && '$BIN' add '$first_cc' --registry '$REGISTRY' --cache-dir '$WORK/cache-d'"
+assert_exit 3 "validate reports the damage too" \
+  bash -c "cd '$WORK/damaged' && '$BIN' validate '$first_cc'"
+assert_exit 0 "--force repairs it" \
+  bash -c "cd '$WORK/damaged' && '$BIN' add '$first_cc' --force --registry '$REGISTRY' --cache-dir '$WORK/cache-d'"
+assert_exit 0 "the repaired package validates" \
+  bash -c "cd '$WORK/damaged' && '$BIN' validate '$first_cc'"
 
 printf '\n\033[1m=== output contract\033[0m\n'
 new_project output

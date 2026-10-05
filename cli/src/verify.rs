@@ -16,6 +16,14 @@ use std::path::Path;
 
 use sha2::{Digest, Sha256};
 
+/// Read a package manifest's raw bytes.
+///
+/// Raw rather than parsed, because the signature covers the bytes: a caller that re-serialized
+/// the manifest before verifying would compute a different document than the publisher signed.
+pub fn read_manifest_bytes(path: &Path) -> Result<Vec<u8>, String> {
+    std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))
+}
+
 /// Decode lowercase or uppercase hex into bytes.
 ///
 /// Lives here rather than in `signature.rs` because both need it: package digests and signature

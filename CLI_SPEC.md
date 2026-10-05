@@ -138,6 +138,19 @@ terrakit remove TR --keep-cache
 Removes `.terrakit/packages/TR/` and updates `terrakit.json`. `--keep-cache` leaves
 the download, which is the point of a shared cache.
 
+`--prune` is the opposite and is the only way cache entries are deleted: an entry is dropped
+only when no installed manifest names its digest, so one project cannot delete an artifact
+another is about to install. `--keep-cache` wins if both are given.
+
+Integrity is reported before deletion, because afterwards there is nothing left to report — and
+a package that was already corrupt is usually the reason the user wanted it gone. Removing a
+country that is not installed exits `6`; removing several where only some are installed succeeds
+and exits `0`, because the useful part of the command worked.
+
+Only the *selected* version is reported as removed, and `remove` does not manage other versions of
+the same country. Upgrading is `update`'s job, because that is the operation that knows a version
+has been superseded.
+
 ### 2.4 `update`
 
 ```bash
@@ -151,6 +164,22 @@ terrakit update --to 2026.10.0  # pin to a specific version
 under a test run is a bad day. Never prompts. Never upgrades across a major
 version of `packageFormatVersion` without `--force`, since that needs a newer CLI
 than the user may have.
+
+`--to` and `--version` are the same flag here; `--to` on `add` is a usage error naming the
+alternative, rather than a silently accepted no-op.
+
+Two rules the implementation makes explicit, because both are silent when broken:
+
+- **The project's pin is respected.** `add` records `^<version>`, and `update` stays inside it. An
+  explicit `--to` overrides the pin for that run.
+- **The superseded version is removed.** Two versions of one country installed means `search`
+  returns the same places twice with identical IDs, and a caller cannot tell a duplicate from a
+  real second result. A version already on disk and still verifying is adopted rather than
+  re-downloaded.
+
+Exit codes: `1` if any package could not be updated, `6` if nothing is installed, `4` for an
+unsatisfiable pin. `--check` exits `0` when every package is resolvable, whether or not updates are
+available — availability is reported in the output, not in the status.
 
 ### 2.5 `list`
 

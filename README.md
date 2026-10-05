@@ -47,7 +47,7 @@ No API key. No network call. No geographic database to build and maintain.
 | Package validation | **working** — §30 rules, zero errors on all four |
 | Reproducible builds | **verified** — byte-identical across runs |
 | Localized / exonym / historic names | **working** — 19.2 M upstream rows, streamed |
-| Rust CLI | **working** — query commands and `add` complete; `remove`/`update`/`bundle` to come |
+| Rust CLI | **working** — query commands, `add`, `remove` and `update` complete |
 | Registry | **working** — static `index.json` on object storage, Ed25519-signed releases |
 | Swift SDK | specified ([`SDK_SPEC.md`](SDK_SPEC.md)), not built |
 | Kotlin SDK | specified, not built |
@@ -172,12 +172,43 @@ tools/build_registry.py datasets/ --out registry/ \
 ```
 
 `--production` refuses anything signed with the committed development key. That guarantee is
-tested, not just documented: [`scripts/test_registry.sh`](scripts/test_registry.sh) is 27 checks
-covering install, idempotency, relocatability, reproducibility, the four refusals, and the
-`--json` contract.
+tested, not just documented: [`scripts/test_registry.sh`](scripts/test_registry.sh) is 52 checks
+covering install, update, remove, cache reuse and pruning, damage detection and repair,
+idempotency, relocatability, reproducibility, the four refusals, and the `--json` contract.
 
-`remove`, `update`, `cache`, `bundle` and `install` are specified in [`CLI_SPEC.md`](CLI_SPEC.md)
-but not built. They say so rather than pretending the command does not exist.
+### Removing and updating
+
+```console
+$ terrakit update --check
+  GE           2026.10.1+e83e -> 2026.10.2+aaaa update available
+
+$ terrakit update
+  updating GE: 2026.10.1+e83e -> 2026.10.2+aaaa
+  GE           2026.10.1+e83e -> 2026.10.2+aaaa updated  (freed 1.3 MB)
+
+$ terrakit remove GE
+  removed  GE 2026.10.2+aaaa (cities, 1.3 MB, was verified)
+  freed 1.3 MB
+```
+
+`update` stays inside the project's pin and removes the version it replaced — leaving two
+versions of one country installed would make `search` return the same places twice with identical
+IDs, and a caller cannot tell a duplicate from a real second result. `remove` leaves the shared
+download cache alone unless `--prune` is given, because one project's `remove` should not turn
+another project's install into a download.
+
+A package whose bytes no longer match its manifest is reported, not treated as installed:
+
+```console
+$ terrakit add GE
+terrakit: GE@2026.10.2+aaaa is installed but modified.
+       Nothing has been changed. Re-run with --force to replace it.
+$ echo $?
+3
+```
+
+`cache`, `bundle` and `install` are specified in [`CLI_SPEC.md`](CLI_SPEC.md) but not built. They
+say so rather than pretending the command does not exist.
 
 Read the specification documents before contributing. They are the source of truth, and code that
 disagrees with them is a bug.

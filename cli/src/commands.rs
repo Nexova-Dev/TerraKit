@@ -11,7 +11,9 @@ use std::time::Instant;
 
 use crate::exit::{Exit, Outcome, failure, usage_error};
 use crate::normalize::normalize;
-use crate::package::{self, Project, human_bytes, human_coord, open_database};
+use crate::package::{
+    self, InstalledPackage, Project, human_bytes, human_coord, open_database,
+};
 use crate::verify;
 
 use crate::download;
@@ -181,20 +183,34 @@ pub fn list(project: &Project, out_format: Format) -> Outcome {
                 "CC", "LEVEL", "VERSION", "SIZE", "INTEGRITY"
             ));
             for p in &packages {
-                let version = manifest
+                // The directory's OWN version, not the project's resolved one.
+                //
+                // `resolution` records which version the project selected, and printing it in
+                // every row made two installed versions of one country list the same version
+                // twice — a column whose only job is to tell them apart. `update` removes the
+                // superseded version, but a user can hold two (an explicit `--version` install,
+                // or a rollback) and `list` must describe the disk truthfully either way.
+                let version = p.version.clone();
+                let resolved = manifest
                     .resolution
                     .as_ref()
                     .and_then(|r| r.get(&p.country))
-                    .map(|r| r.version.clone())
-                    .unwrap_or_else(|| p.version.clone());
+                    .map(|r| r.version.clone());
                 // Checksum verification, not signature verification: this is what
                 // catches a package tampered with locally, which a valid signature
                 // does not. See verify.rs and SECURITY.md section 7.
                 let integrity = verify::verify_package(&p.directory)
                     .map(|v| v.summary())
                     .unwrap_or("unverifiable");
+                // Mark the version the project actually selected, so a rollback is visible
+                // without a second command.
+                let marker = match resolved.as_deref() {
+                    Some(resolved) if resolved != version => " (not selected)",
+                    Some(_) => " *",
+                    None => "",
+                };
                 emit(&format!(
-                    "  {:<4}  {:<12}  {:<14}  {:>9}  {}",
+                    "  {:<4}  {:<12}  {:<14}  {:>9}  {}{marker}",
                     p.country,
                     p.level,
                     version,
@@ -203,6 +219,18 @@ pub fn list(project: &Project, out_format: Format) -> Outcome {
                 ));
             }
             emit("");
+            // Explain the marker. A column whose annotations are unlabelled is decoration.
+            if packages.iter().any(|p| {
+                manifest
+                    .resolution
+                    .as_ref()
+                    .and_then(|r| r.get(&p.country))
+                    .map(|r| r.version != p.version)
+                    .unwrap_or(false)
+            }) {
+                emit("  *  the version terrakit.json selected");
+                emit("     (not selected)  another version of the same country is also present");
+            }
             emit(&format!(
                 "{} package(s) in {}",
                 packages.len(),
@@ -762,6 +790,12 @@ pub fn add(
         Format::Human => {
             for record in &records {
                 emit(&format!("  installed  {}", record.to_human()));
+                // SPEC section 29 and CLI_SPEC.md 2.2: the attribution prints on every
+                // successful install, not only in the documentation. A GeoNames-derived package
+                // is CC-BY precisely because someone downstream gives the credit.
+                if let Some((license, lines)) = &record.attribution {
+                    emit_attribution(license, lines);
+                }
             }
         }
     }
@@ -795,19 +829,36 @@ pub struct AddRecord {
     pub size_bytes: u64,
     pub signed_by: String,
     pub status: &'static str,
+    /// Licence and attribution, so a `--json` consumer can reproduce it.
+    pub attribution: Option<(String, Vec<String>)>,
 }
 
 impl AddRecord {
+    /// Render as a JSON object.
+    ///
+    /// Assembled from two parts rather than one format string so the optional licence fields
+    /// land INSIDE the object. Appending them after the closing brace — the obvious way to
+    /// avoid an optional trailing comma — produces `{"a":1},"license":"x"`, which is not JSON,
+    /// and `add --json` stopped parsing.
     fn to_json(&self) -> String {
-        format!(
-            "{{\"country\":{},\"version\":{},\"level\":{},\"sizeBytes\":{},\"signedBy\":{},\"status\":{}}}",
+        let mut out = format!(
+            "{{\"country\":{},\"version\":{},\"level\":{},\"sizeBytes\":{},\"signedBy\":{},\"status\":{}",
             jstr(&self.country),
             jstr(&self.version),
             jstr_opt(&self.level),
             self.size_bytes,
             jstr(&self.signed_by),
             jstr(self.status),
-        )
+        );
+        if let Some((license, lines)) = &self.attribution {
+            out.push_str(&format!(
+                ",\"license\":{},\"attribution\":[{}]",
+                jstr(license),
+                lines.iter().map(|l| jstr(l)).collect::<Vec<_>>().join(",")
+            ));
+        }
+        out.push('}');
+        out
     }
 
     fn to_human(&self) -> String {
@@ -833,8 +884,20 @@ pub struct AddOptions {
     /// postal data, so `terrakit add GE --level postal` says so rather than installing a
     /// `cities` package under a `postal` promise.
     pub level: Option<String>,
-    /// Reinstall even when the version is already present.
+    /// Reinstall even when the version is already present and intact.
+    ///
+    /// This is the user asking for a repair: `add TR --force` re-downloads a package the user
+    /// suspects is damaged.
     pub force: bool,
+    /// Accept a matching package that is already on disk and verifies, instead of reinstalling.
+    ///
+    /// Set by `update`, which has no reason to re-download a version it already holds. Distinct
+    /// from `force` because the two want opposite things from the same situation: a user typing
+    /// `--force` wants the bytes replaced, while an update moving the selection onto a version
+    /// that happens to still be present wants it adopted.
+    pub adopt_verified: bool,
+    /// Report what an update would do and change nothing.
+    pub check_only: bool,
 }
 
 fn add_one(
@@ -1004,19 +1067,19 @@ fn add_one(
         .join(country)
         .join(registry::version_to_path_segment(&version));
 
-    if destination.exists() && !options.force {
-        // Report what is actually on disk rather than a zero placeholder: `--json` output that
-        // says 0 B for an installed 9.9 MB package is worse than no size field, because a script
-        // that sums it gets a plausible wrong answer.
-        if let Some(existing) = project
-            .installed()
-            .into_iter()
-            .find(|p| p.country == country && p.version == version)
-        {
+    if destination.exists() {
+        let existing = crate::verify::verify_package(&destination);
+        let intact = existing.as_ref().map(|v| v.ok).unwrap_or(false);
+
+        if intact && (options.adopt_verified || !options.force) {
+            // Report what is actually on disk rather than a zero placeholder: `--json` saying
+            // 0 B for an installed 9.9 MB package is worse than no size field, because a script
+            // that sums it gets a plausible wrong answer.
             progress(&format!(
                 "  {country}@{version} is already installed; nothing to do (--force to reinstall)"
             ));
-            let integrity = crate::verify::verify_package(&existing.directory)
+            let integrity = existing
+                .as_ref()
                 .map(|v| v.summary().to_string())
                 .unwrap_or_else(|_| "unverifiable".to_string());
             record_resolution(manifest, country, &version, published_level.as_deref());
@@ -1024,10 +1087,37 @@ fn add_one(
                 country: country.to_string(),
                 version,
                 level: published_level.clone(),
-                size_bytes: existing.size_on_disk(),
+                size_bytes: install::dir_size(&destination),
                 signed_by: integrity,
                 status: "already-installed",
+                attribution: None,
             });
+        }
+
+        if !options.force {
+            // Present, bytes do not match the manifest, and no instruction to replace them.
+            // Reporting this as "already installed" would be the worst outcome available: the
+            // user is told the package is fine while it does not verify.
+            let detail = existing
+                .as_ref()
+                .map(|v| v.summary().to_string())
+                .unwrap_or_else(|e| format!("unverifiable: {e}"));
+            eprintln!(
+                "terrakit: {country}@{version} is installed but {detail}."
+            );
+            eprintln!(
+                "       Nothing has been changed. Re-run with --force to replace it."
+            );
+            return Err(Exit::Verification);
+        }
+
+        // --force: the package is being replaced on purpose. Remove it before staging so the
+        // commit's existence check passes, and so a failure leaves nothing rather than a
+        // half-replaced directory.
+        progress(&format!("  replacing the installed {country}@{version}"));
+        if let Err(e) = std::fs::remove_dir_all(&destination) {
+            eprintln!("terrakit: cannot replace {}: {e}", destination.display());
+            return Err(Exit::Failure);
         }
     }
 
@@ -1045,38 +1135,65 @@ fn add_one(
 
     // --- 5. download ---------------------------------------------------------
     let artifact = artifact_name(compression);
+    let expected_download_digest = compressed_sha256.unwrap_or(expected_sha256);
     let cache_target = download::cache_path(
         &context.cache_dir,
-        compressed_sha256.unwrap_or(expected_sha256),
+        expected_download_digest,
         &format!(".{}", artifact.rsplit('.').next().unwrap_or("bin")),
     );
 
-    progress(&format!(
-        "  downloading {}",
-        download::human_bytes(compressed_size)
-    ));
+    // A cache entry is used only after it verifies. Keying by digest makes the filename a
+    // claim rather than a fact, and an interrupted write, a truncated file or a poisoned cache
+    // would otherwise install without a download at all.
+    let cached = cache_target.is_file()
+        && download::verify_file(&cache_target, expected_download_digest).is_ok();
+
+    if cached {
+        progress(&format!(
+            "  cached   {}",
+            download::human_bytes(compressed_size)
+        ));
+    } else {
+        progress(&format!(
+            "  downloading {}",
+            download::human_bytes(compressed_size)
+        ));
+    }
     // In-place progress overwrites its line with \r, which is only meaningful on a terminal.
     // Piped or captured, it collects every intermediate percentage on one line.
     let interactive = is_terminal();
     let mut last_percent = -1i32;
-    let outcome = download::download(
-        &download_url,
-        &cache_target,
-        compressed_sha256.or(Some(expected_sha256)),
-        context.offline,
-        &mut |received, total| {
-            // Progress on stderr: stdout carries data (`CLI_SPEC.md` §1).
-            if interactive && total > 0 {
-                let percent = (received as f64 / total as f64 * 100.0) as i32;
-                if percent >= last_percent + 10 {
-                    last_percent = percent;
-                    eprint!("\r    {percent:>3}%  {}", download::human_bytes(received));
-                    let _ = std::io::Write::flush(&mut std::io::stderr());
+    let outcome = if cached {
+        // A `--offline` install works whenever the artifact is already here, which is the
+        // whole point of a cache and the only way an air-gapped reinstall is possible.
+        if context.offline {
+            progress("  using the cached artifact (--offline)");
+        }
+        Ok(download::FetchOutcome {
+            bytes: compressed_size,
+            resumed_from: 0,
+            attempts: 0,
+        })
+    } else {
+        download::download(
+            &download_url,
+            &cache_target,
+            Some(expected_download_digest),
+            context.offline,
+            &mut |received, total| {
+                // Progress on stderr: stdout carries data (`CLI_SPEC.md` section 1).
+                if interactive && total > 0 {
+                    let percent = (received as f64 / total as f64 * 100.0) as i32;
+                    if percent >= last_percent + 10 {
+                        last_percent = percent;
+                        eprint!("\r    {percent:>3}%  {}", download::human_bytes(received));
+                        let _ = std::io::Write::flush(&mut std::io::stderr());
+                    }
                 }
-            }
-        },
-    );
-    if interactive {
+            },
+        )
+    };
+    if interactive && !cached {
         eprintln!();
     }
     let outcome = match outcome {
@@ -1086,7 +1203,11 @@ fn add_one(
             return Err(download::exit_for(&e));
         }
     };
-    progress(&format!("  downloaded {}", outcome.summary()));
+    if cached {
+        progress("  from cache");
+    } else {
+        progress(&format!("  {}", fetch_summary(&outcome)));
+    }
 
     // --- 6. stage ------------------------------------------------------------
     let staged = install::stage(
@@ -1140,6 +1261,8 @@ fn add_one(
         destination.display()
     ));
 
+    let (license, attribution_lines) = attribution_of(&manifest_value);
+
     Ok(AddRecord {
         country: country.to_string(),
         version,
@@ -1147,7 +1270,63 @@ fn add_one(
         size_bytes: committed.size_on_disk,
         signed_by: key_id.clone(),
         status: "installed",
+        attribution: Some((license, attribution_lines)),
     })
+}
+
+/// Format a fetch outcome for the progress line.
+fn fetch_summary(outcome: &download::FetchOutcome) -> String {
+    format!("downloaded {}", outcome.summary())
+}
+
+/// The licence and attribution strings a successful install obliges the user to reproduce.
+fn attribution_of(manifest: &serde_json::Value) -> (String, Vec<String>) {
+    let license = manifest
+        .get("license")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+        .to_string();
+
+    let lines: Vec<String> = manifest
+        .get("attribution")
+        .and_then(|v| v.as_array())
+        .map(|entries| entries.iter().filter_map(|e| e.as_str()).map(String::from).collect())
+        .unwrap_or_default();
+
+    // The fallback is not a courtesy: `terra info` prints it too, and a package whose
+    // attribution exists only in the documentation is a licence violation waiting to happen.
+    if lines.is_empty() {
+        if let Some(sources) = manifest.get("sources").and_then(|v| v.as_array()) {
+            return (
+                license,
+                sources
+                    .iter()
+                    .take(3)
+                    .map(|source| {
+                        source
+                            .get("attribution")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("(no attribution recorded)")
+                            .to_string()
+                    })
+                    .collect(),
+            );
+        }
+    }
+    (license, lines)
+}
+
+/// Print the attribution block, for human output only.
+///
+/// `--json` puts nothing but JSON on stdout (`CLI_SPEC.md` section 1), and this block arrived
+/// there after that contract was written. The strings themselves travel inside the JSON record,
+/// so nothing is lost: a script that has to reproduce an attribution reads it from the machine
+/// output, and a person reads it on their terminal.
+fn emit_attribution(license: &str, lines: &[String]) {
+    emit(&format!("    License      {license}"));
+    for line in lines {
+        emit(&format!("    Attribution  {line}"));
+    }
 }
 
 /// On-disk name of a compressed artifact.
@@ -1241,6 +1420,593 @@ fn check_compatibility(manifest: &serde_json::Value) -> Result<(), Exit> {
     Ok(())
 }
 
+// --- remove ------------------------------------------------------------------
+
+/// `terrakit remove <CC>...`
+///
+/// Removes the country's package directory and drops it from `terrakit.json`. The shared
+/// download cache is left alone unless `--prune` is given, because the cache is shared across
+/// projects: one project's `remove` deleting an artifact another project is about to install
+/// turns a local operation into a network round trip somewhere else.
+///
+/// `cli remove` deliberately does *not* touch anything else. In particular it leaves other
+/// versions of the same country alone unless asked, because a package directory per version is
+/// what makes a rollback possible and nothing here knows whether the user wants that.
+pub fn remove(
+    project: &Project,
+    countries: &[String],
+    cache_dir: &Path,
+    prune_cache: bool,
+    out_format: Format,
+) -> Outcome {
+    if countries.is_empty() {
+        return usage_error("remove needs at least one country code, e.g. 'terrakit remove TR'");
+    }
+
+    let mut manifest = match project.read_manifest() {
+        Ok(manifest) => manifest,
+        Err(reason) => {
+            eprintln!("terrakit: {reason}");
+            return Err(Exit::NotInstalled);
+        }
+    };
+
+    let mut removed: Vec<RemoveRecord> = Vec::new();
+    let mut missing: Vec<String> = Vec::new();
+    let mut freed: u64 = 0;
+
+    for country in countries {
+        let code = match registry::country_code(country) {
+            Ok(code) => code,
+            Err(reason) => {
+                eprintln!("terrakit: {reason}");
+                return Err(Exit::Usage);
+            }
+        };
+
+        let installed = project.packages_for(&code);
+        if installed.is_empty() {
+            missing.push(code.clone());
+            continue;
+        }
+
+        // Reported before deletion, because afterwards there is nothing left to report. A
+        // package that was already corrupt is worth knowing about: the user asked to remove it
+        // for a reason, and "it was already broken" is usually the explanation.
+        let mut records = Vec::new();
+        for package in &installed {
+            let (integrity, size) = match crate::verify::verify_package(&package.directory) {
+                Ok(result) => (result.summary().to_string(), package.size_on_disk()),
+                Err(reason) => (format!("unreadable: {reason}"), package.size_on_disk()),
+            };
+            freed += size;
+            records.push(RemoveRecord {
+                country: code.clone(),
+                version: package.version.clone(),
+                level: package.level.clone(),
+                size_bytes: size,
+                integrity,
+            });
+        }
+
+        let directory = project.packages_dir.join(&code);
+        if let Err(e) = std::fs::remove_dir_all(&directory) {
+            eprintln!("terrakit: cannot remove {}: {e}", directory.display());
+            return Err(Exit::Failure);
+        }
+
+        manifest.packages.remove(&code);
+        if let Some(resolution) = manifest.resolution.as_mut() {
+            resolution.remove(&code);
+        }
+        removed.extend(records);
+    }
+
+    // One write, after every country. A per-country write would leave a manifest claiming a
+    // package is installed after its directory has been deleted, which `list` and `search`
+    // both trust.
+    if !removed.is_empty() {
+        if let Err(e) = project.write_manifest(&manifest) {
+            return failure(format!("cannot write {}: {e}", project.manifest_path.display()));
+        }
+    }
+
+    if prune_cache {
+        prune_cache_dir(project, cache_dir);
+    }
+
+    match out_format {
+        Format::Json => emit(&format!(
+            "{{\"ok\":{},\"removed\":[{}],\"notInstalled\":[{}],\"freedBytes\":{},\"cachePruned\":{}}}",
+            !removed.is_empty(),
+            removed
+                .iter()
+                .map(RemoveRecord::to_json)
+                .collect::<Vec<_>>()
+                .join(","),
+            missing
+                .iter()
+                .map(|c| jstr(c))
+                .collect::<Vec<_>>()
+                .join(","),
+            freed,
+            prune_cache,
+        )),
+        Format::Human => {
+            for record in &removed {
+                emit(&format!(
+                    "  removed  {}",
+                    record.to_human()
+                ));
+            }
+            if !missing.is_empty() {
+                for code in &missing {
+                    progress(&format!("  {code} is not installed; nothing to remove"));
+                }
+            }
+            if freed > 0 {
+                emit(&format!("\n  freed {}", download::human_bytes(freed)));
+            }
+        }
+    }
+
+    // Removing nothing that was asked for is not a failure: `terrakit remove TR DE` where DE
+    // was never installed removed TR and reported DE. Failing would make the useful part of the
+    // command look broken. But a request that removed nothing at all exits 6, so a script can
+    // tell "did what you asked" from "there was nothing there".
+    if removed.is_empty() {
+        return Err(Exit::NotInstalled);
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+pub struct RemoveRecord {
+    pub country: String,
+    pub version: String,
+    pub level: String,
+    pub size_bytes: u64,
+    pub integrity: String,
+}
+
+impl RemoveRecord {
+    fn to_json(&self) -> String {
+        format!(
+            "{{\"country\":{},\"version\":{},\"level\":{},\"sizeBytes\":{},\"integrityBeforeRemoval\":{}}}",
+            jstr(&self.country),
+            jstr(&self.version),
+            jstr(&self.level),
+            self.size_bytes,
+            jstr(&self.integrity),
+        )
+    }
+
+    fn to_human(&self) -> String {
+        format!(
+            "{} {} ({}, {}, was {})",
+            self.country,
+            self.version,
+            self.level,
+            download::human_bytes(self.size_bytes),
+            self.integrity
+        )
+    }
+}
+
+/// Drop download artifacts no installed package refers to.
+///
+/// Keyed by digest, so this cannot delete an artifact some other project is about to install:
+/// an entry is removed only when no installed manifest names its digest.
+fn prune_cache_dir(project: &Project, cache: &Path) {
+    let artifacts = cache.join("artifacts");
+    let Ok(shards) = std::fs::read_dir(&artifacts) else {
+        return;
+    };
+
+    let mut referenced: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for package in project.installed() {
+        if let Ok(manifest) = crate::verify::read_manifest_bytes(&package.manifest_path) {
+            if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&manifest) {
+                if let Some(files) = value.get("files").and_then(|f| f.as_array()) {
+                    for entry in files {
+                        if let Some(digest) = entry
+                            .get("compressedSha256")
+                            .and_then(|v| v.as_str())
+                        {
+                            referenced.insert(digest.to_string());
+                        }
+                        if let Some(digest) = entry.get("sha256").and_then(|v| v.as_str()) {
+                            referenced.insert(digest.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut freed = 0u64;
+    let mut removed = 0usize;
+    for shard in shards.flatten() {
+        let Ok(entries) = std::fs::read_dir(shard.path()) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let Some(digest) = name.split('.').next() else {
+                continue;
+            };
+            if referenced.contains(digest) {
+                continue;
+            }
+            if let Ok(meta) = entry.metadata() {
+                freed += meta.len();
+            }
+            if std::fs::remove_file(entry.path()).is_ok() {
+                removed += 1;
+            }
+        }
+    }
+    if removed > 0 {
+        progress(&format!(
+            "  pruned {removed} cache entr{} ({}), unreferenced by any installed package",
+            if removed == 1 { "y" } else { "ies" },
+            download::human_bytes(freed)
+        ));
+    }
+}
+
+// --- update ------------------------------------------------------------------
+
+/// `terrakit update [CC]...`
+///
+/// Installs the newest published version that satisfies the project's pin, then removes the
+/// version it replaced.
+///
+/// Removing the old version is not tidiness. `search` opens every installed package, so two
+/// versions of one country return the same places twice with identical IDs — and the caller has
+/// no way to tell a duplicate from a real second result. One active version per country is what
+/// keeps the result set honest.
+pub fn update(
+    project: &Project,
+    countries: &[String],
+    context: &Context,
+    options: &AddOptions,
+    out_format: Format,
+) -> Outcome {
+    let mut manifest = match project.read_manifest() {
+        Ok(manifest) => manifest,
+        Err(reason) => {
+            eprintln!("terrakit: {reason}");
+            return Err(Exit::NotInstalled);
+        }
+    };
+
+    let installed = project.installed();
+    if installed.is_empty() {
+        eprintln!("terrakit: no packages installed.");
+        return Err(Exit::NotInstalled);
+    }
+
+    // No arguments means every installed country, which is what `terrakit update` alone means.
+    let targets: Vec<String> = if countries.is_empty() {
+        let mut codes: Vec<String> = installed.iter().map(|p| p.country.clone()).collect();
+        codes.sort();
+        codes.dedup();
+        codes
+    } else {
+        countries.to_vec()
+    };
+
+    let mut findings: Vec<UpdateFinding> = Vec::new();
+    let mut changed_any = false;
+    let mut failed = false;
+
+    for country in &targets {
+        let code = match registry::country_code(country) {
+            Ok(code) => code,
+            Err(reason) => {
+                eprintln!("terrakit: {reason}");
+                return Err(Exit::Usage);
+            }
+        };
+
+        let current: Vec<&InstalledPackage> =
+            installed.iter().filter(|p| p.country == code).collect();
+        if current.is_empty() {
+            findings.push(UpdateFinding {
+                country: code.clone(),
+                current: None,
+                latest: None,
+                action: UpdateAction::NotInstalled,
+                note: Some("not installed; use 'terrakit add'".into()),
+            });
+            failed = true;
+            continue;
+        }
+
+        let package = match registry::package_name_for(&code) {
+            Ok(name) => name,
+            Err(reason) => {
+                eprintln!("terrakit: {reason}");
+                return Err(Exit::Usage);
+            }
+        };
+
+        let index = match registry::fetch_package(&context.registry, &package, context.offline) {
+            Ok(index) => index,
+            Err(reason) => {
+                eprintln!("terrakit: {code}: {reason}");
+                findings.push(UpdateFinding {
+                    country: code.clone(),
+                    current: current.first().map(|p| p.version.clone()),
+                    latest: None,
+                    action: UpdateAction::Unknown,
+                    note: Some(reason.lines().next().unwrap_or("unavailable").to_string()),
+                });
+                failed = true;
+                continue;
+            }
+        };
+
+        // The range an update may move within. An explicit --to wins; otherwise the project's
+        // own pin applies, so `update` cannot escape a constraint the user wrote down. With no
+        // pin, any published version qualifies, which is what makes the first `add` write a pin
+        // and every later `update` respect it.
+        let requested: VersionRange = match &options.version {
+            Some(explicit) => VersionRange::parse(explicit).map_err(|e| {
+                eprintln!("terrakit: {e}");
+                Exit::Usage
+            })?,
+            None => match manifest.packages.get(&code) {
+                Some(pinned) => VersionRange::parse(pinned).map_err(|e| {
+                    eprintln!("terrakit: terrakit.json pins {code} to {pinned:?}: {e}");
+                    Exit::Usage
+                })?,
+                None => VersionRange::Any,
+            },
+        };
+
+        let latest = index.latest.as_ref().map(|l| l.version.clone());
+        let target = match registry::select_version(&index.versions, &requested) {
+            Ok(entry) => entry.version.clone(),
+            Err(reason) => {
+                eprintln!("terrakit: {code}: {reason}");
+                findings.push(UpdateFinding {
+                    country: code.clone(),
+                    current: current.first().map(|p| p.version.clone()),
+                    latest,
+                    action: UpdateAction::Unknown,
+                    note: Some("no version satisfies the pin".into()),
+                });
+                failed = true;
+                continue;
+            }
+        };
+
+        // "Current" is the version the project SELECTED, not the newest on disk.
+        //
+        // Those differ after a rollback or an explicit `--version` install: the directory may
+        // hold 2026.11.0 while terrakit.json still selects 2026.10.1. Using the newest on disk
+        // made update believe it was already current, then try to install a version whose
+        // directory existed, and refuse. The selection is what `search` resolves against and
+        // what a user means by "the version I have".
+        let current_version = manifest
+            .resolution
+            .as_ref()
+            .and_then(|r| r.get(&code))
+            .map(|r| r.version.clone())
+            .or_else(|| {
+                current
+                    .iter()
+                    .map(|p| p.version.clone())
+                    .max_by(|a, b| compare_versions(a, b))
+            })
+            .unwrap_or_default();
+
+        if target == current_version {
+            findings.push(UpdateFinding {
+                country: code.clone(),
+                current: Some(current_version.clone()),
+                latest,
+                action: UpdateAction::UpToDate,
+                note: None,
+            });
+            continue;
+        }
+
+        if options.check_only {
+            findings.push(UpdateFinding {
+                country: code.clone(),
+                current: Some(current_version.clone()),
+                latest: Some(target.clone()),
+                action: UpdateAction::Available,
+                note: None,
+            });
+            continue;
+        }
+
+        progress(&format!(
+            "updating {code}: {current_version} -> {target}"
+        ));
+
+        // add_one re-verifies, re-checks space and installs atomically. Reused rather than
+        // reimplemented because a second install path would be a second set of bugs, and this
+        // is the same operation with a different starting version.
+        let install_options = AddOptions {
+            version: Some(target.clone()),
+            level: options.level.clone(),
+            // Not `force`: the target may already be on disk and verified, and re-downloading
+            // it would be pure waste. `adopt_verified` takes it as it finds it.
+            force: false,
+            adopt_verified: true,
+            check_only: false,
+        };
+        match add_one(project, &code, &mut manifest, context, &install_options) {
+            Ok(_) => {
+                changed_any = true;
+                // Every version on disk except the target, not merely the one that was
+                // selected. A rollback can leave two directories behind, and leaving either
+                // means `search` returns the same places twice with identical IDs.
+                let superseded: Vec<String> = current
+                    .iter()
+                    .map(|p| p.version.clone())
+                    .filter(|v| *v != target)
+                    .collect();
+                let mut freed = 0;
+                for version in &superseded {
+                    let old = project
+                        .packages_dir
+                        .join(&code)
+                        .join(registry::version_to_path_segment(version));
+                    freed += install::dir_size(&old);
+                    if let Err(e) = std::fs::remove_dir_all(&old) {
+                        // A leftover old version is not fatal: the new one is installed and
+                        // correct. It is, however, a duplicate in every search result, so it
+                        // is reported rather than swallowed.
+                        eprintln!(
+                            "terrakit: warning: cannot remove the superseded version {}: {e}",
+                            old.display()
+                        );
+                        findings.push(UpdateFinding {
+                            country: code.clone(),
+                            current: Some(current_version.clone()),
+                            latest: Some(target.clone()),
+                            action: UpdateAction::Updated,
+                            note: Some(format!(
+                                "could not remove the old version at {}; search results will                                  include it twice",
+                                old.display()
+                            )),
+                        });
+                        continue;
+                    }
+                }
+                findings.push(UpdateFinding {
+                    country: code.clone(),
+                    current: Some(current_version.clone()),
+                    latest: Some(target.clone()),
+                    action: UpdateAction::Updated,
+                    note: if freed > 0 {
+                        Some(format!("freed {}", download::human_bytes(freed)))
+                    } else {
+                        None
+                    },
+                });
+            }
+            Err(code_) => {
+                eprintln!("terrakit: {code}: update failed.");
+                failed = true;
+                findings.push(UpdateFinding {
+                    country: code.clone(),
+                    current: Some(current_version.clone()),
+                    latest: Some(target.clone()),
+                    action: UpdateAction::Failed,
+                    note: Some(format!("exit {}", code_.code())),
+                });
+            }
+        }
+    }
+
+    if changed_any {
+        if let Err(e) = project.write_manifest(&manifest) {
+            return failure(format!("cannot write {}: {e}", project.manifest_path.display()));
+        }
+    }
+
+    let all_ok = !failed;
+    match out_format {
+        Format::Json => emit(&format!(
+            "{{\"ok\":{},\"checkOnly\":{},\"changed\":{},\"packages\":[{}]}}",
+            all_ok,
+            options.check_only,
+            changed_any,
+            findings
+                .iter()
+                .map(UpdateFinding::to_json)
+                .collect::<Vec<_>>()
+                .join(",")
+        )),
+        Format::Human => {
+            for finding in &findings {
+                emit(&format!("  {}", finding.to_human()));
+            }
+        }
+    }
+
+    if failed {
+        return Err(Exit::Failure);
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateAction {
+    UpToDate,
+    Available,
+    Updated,
+    NotInstalled,
+    Unknown,
+    Failed,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpdateFinding {
+    pub country: String,
+    pub current: Option<String>,
+    pub latest: Option<String>,
+    pub action: UpdateAction,
+    pub note: Option<String>,
+}
+
+impl UpdateFinding {
+    fn label(&self) -> &'static str {
+        match self.action {
+            UpdateAction::UpToDate => "up to date",
+            UpdateAction::Available => "update available",
+            UpdateAction::Updated => "updated",
+            UpdateAction::NotInstalled => "not installed",
+            UpdateAction::Unknown => "unknown",
+            UpdateAction::Failed => "failed",
+        }
+    }
+
+    fn to_json(&self) -> String {
+        format!(
+            "{{\"country\":{},\"current\":{},\"latest\":{},\"action\":{},\"note\":{}}}",
+            jstr(&self.country),
+            jstr_opt(&self.current),
+            jstr_opt(&self.latest),
+            jstr(self.label()),
+            jstr_opt(&self.note),
+        )
+    }
+
+    fn to_human(&self) -> String {
+        let arrow = match (&self.current, &self.latest) {
+            (Some(current), Some(latest)) => format!("{current} -> {latest}"),
+            (Some(current), None) => format!("{current} -> ?"),
+            (None, Some(latest)) => format!("- -> {latest}"),
+            (None, None) => "-".to_string(),
+        };
+        let note = self
+            .note
+            .as_ref()
+            .map(|n| format!("  ({n})"))
+            .unwrap_or_default();
+        format!("{:<12} {:<32} {}{note}", self.country, arrow, self.label())
+    }
+}
+
+/// Numeric version comparison, for "which of these installed versions is current".
+///
+/// Numeric rather than string ordering: `2026.10.10` is newer than `2026.10.9`, and a
+/// lexicographic comparison gets that backwards and would then remove the newer package during
+/// an update.
+fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
+    registry::Version::parse(a)
+        .cmp(&registry::Version::parse(b))
+        .then_with(|| a.cmp(b))
+}
+
 // --- helpers ---------------------------------------------------------------
 
 fn format_thousands(value: i64) -> String {
@@ -1295,6 +2061,65 @@ mod tests {
         assert_eq!(truncate("İstanbul", 4), "İst…");
         assert_eq!(truncate("İstanbul", 8), "İstanbul");
         assert_eq!(truncate("東京都", 2), "東…");
+    }
+
+    #[test]
+    fn versions_compare_numerically_not_as_text() {
+        use std::cmp::Ordering;
+
+        // `update` removes the version it superseded, so picking the wrong "current" deletes
+        // the wrong directory. Lexicographic ordering makes 2026.10.9 look newer than
+        // 2026.10.10.
+        assert_eq!(compare_versions("2026.10.10", "2026.10.9"), Ordering::Greater);
+        assert_eq!(compare_versions("2026.11.0", "2026.10.9"), Ordering::Greater);
+        assert_eq!(compare_versions("2026.9.1", "2026.10.1"), Ordering::Less);
+        // A build suffix does not change the release line, so the full string breaks the tie.
+        assert_eq!(compare_versions("2026.10.1", "2026.10.1+a6c3"), Ordering::Less);
+        assert_eq!(compare_versions("2026.10.1+a", "2026.10.1+a"), Ordering::Equal);
+    }
+
+    #[test]
+    fn update_findings_render_both_directions() {
+        let forward = UpdateFinding {
+            country: "GE".into(),
+            current: Some("2026.10.1+e83e".into()),
+            latest: Some("2026.11.0+f00d".into()),
+            action: UpdateAction::Available,
+            note: None,
+        };
+        let line = forward.to_human();
+        assert!(line.contains("2026.10.1+e83e -> 2026.11.0+f00d"), "{line}");
+        assert!(line.contains("update available"), "{line}");
+        assert!(forward.to_json().contains("\"action\":\"update available\""));
+
+        // A registry that could not be read must not claim "up to date": that is the answer
+        // that silently hides a broken --registry from a user who expected fresh information.
+        let unknown = UpdateFinding {
+            country: "GE".into(),
+            current: Some("2026.10.1+e83e".into()),
+            latest: None,
+            action: UpdateAction::Unknown,
+            note: Some("registry unreachable".into()),
+        };
+        assert!(unknown.to_human().contains("-> ?"), "{}", unknown.to_human());
+        assert!(unknown.to_human().contains("registry unreachable"));
+    }
+
+    #[test]
+    fn a_remove_record_reports_the_integrity_it_had_before_removal() {
+        // The package is gone afterwards, so this is the only place the user learns it was
+        // already broken -- which is usually why they wanted it gone.
+        let record = RemoveRecord {
+            country: "TR".into(),
+            version: "2026.10.1+9920".into(),
+            level: "postal".into(),
+            size_bytes: 10_354_688,
+            integrity: "modified".into(),
+        };
+        let human = record.to_human();
+        assert!(human.contains("was modified"), "{human}");
+        assert!(human.contains("9.9 MB"), "{human}");
+        assert!(record.to_json().contains("integrityBeforeRemoval"));
     }
 
     #[test]

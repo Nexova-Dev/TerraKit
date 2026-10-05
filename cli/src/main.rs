@@ -26,7 +26,7 @@ COMMANDS
     init                    Create terrakit.json in the current directory
     add <CC>...             Install or upgrade country packages
     remove <CC>...          Uninstall country packages
-    update [CC]             Check for and apply newer dataset versions
+    update [CC]...          Check for and apply newer dataset versions
     list                    Installed packages
     search <query>          Search across installed packages
     info <CC>               Country metadata and entity counts
@@ -81,13 +81,16 @@ struct Flags {
     level: Option<String>,
     platform: Option<String>,
     strict: bool,
-    check_only: bool,
     force: bool,
     cache_dir: Option<PathBuf>,
     /// The package version requested by `--version`, as opposed to the CLI's own version.
     package_version: Option<String>,
     registry: Option<String>,
     offline: bool,
+    check_only: bool,
+    /// `remove --prune`: also drop unreferenced cache entries.
+    prune: bool,
+    keep_cache: bool,
 }
 
 impl Default for Flags {
@@ -101,12 +104,14 @@ impl Default for Flags {
             level: None,
             platform: None,
             strict: false,
-            check_only: false,
             force: false,
             cache_dir: None,
             package_version: None,
             registry: None,
             offline: false,
+            check_only: false,
+            prune: false,
+            keep_cache: false,
         }
     }
 }
@@ -129,6 +134,7 @@ fn run(args: &[String]) -> Outcome {
     // `terrakit --version --json` must produce JSON regardless of which flag came first.
     // Reading it only in the main loop would make the output depend on argument order.
     let wants_json = args.iter().any(|a| a == "--json");
+    let used_to_flag = rest.iter().any(|a| a == "--to");
 
     // Flags are separated from positionals in one pass so `--json` works before
     // or after the positional arguments, which is what people actually type.
@@ -153,7 +159,13 @@ fn run(args: &[String]) -> Outcome {
             "--json" => flags.json = true,
             "--quiet" | "--no-color" => {}
             "--offline" => flags.offline = true,
-            "--verbose" | "--check" => flags.check_only = true,
+            "--verbose" => {}
+            // `update --check` reports without changing anything, and `--check-only` is the
+            // unambiguous spelling. Both are honoured rather than one, because a script that
+            // passes `--check` and gets an install would be a very bad afternoon.
+            "--check" | "--check-only" | "--dry-run" => flags.check_only = true,
+            "--prune" => flags.prune = true,
+            "--keep-cache" => flags.keep_cache = true,
             "--strict" => flags.strict = true,
             "--force" => flags.force = true,
             "--registry" => flags.registry = Some(take_value("--registry")?),
@@ -194,6 +206,9 @@ fn run(args: &[String]) -> Outcome {
             // `terrakit --version` reports the CLI's own. Disambiguated by whether a
             // command was given, which is available here because the command is parsed
             // before the flags.
+            // `--to` is `update`'s documented spelling (CLI_SPEC.md 2.4) and `--version` is the
+            // global one; both set the same value, so a user who reaches for either gets it.
+            "--to" => flags.package_version = Some(take_value("--to")?),
             "--version" | "-V" => {
                 if command.is_empty() {
                     let early = if wants_json { Format::Json } else { Format::Human };
@@ -289,7 +304,10 @@ fn run(args: &[String]) -> Outcome {
         // Exit::Failure rather than a new code: CLI_SPEC.md §1 fixes the code
         // table, and adding an undeclared one would break the contract a script
         // depends on. `1` correctly means "did not do what you asked".
-        "add" => {
+        // Shared by `add` and `update`: both resolve settings the same way, and a difference
+        // would mean `update` read a different registry than the `add` that installed the
+        // package.
+        "add" | "update" => {
             let project = package::require_project(&cwd)?;
             let context = commands::Context::load(
                 flags.registry.as_deref(),
@@ -304,8 +322,42 @@ fn run(args: &[String]) -> Outcome {
                 version: flags.package_version.clone(),
                 level: flags.level.clone(),
                 force: flags.force,
+                adopt_verified: false,
+                check_only: flags.check_only,
             };
-            commands::add(&project, &positionals, &context, options, out_format)
+            if command == "add" {
+                if used_to_flag {
+                    return usage_error(
+                        "--to is `update`'s flag. For a fresh install use --version, \
+                         as in 'terrakit add TR --version 2026.10.1'.",
+                    );
+                }
+                commands::add(&project, &positionals, &context, options, out_format)
+            } else {
+                commands::update(&project, &positionals, &context, &options, out_format)
+            }
+        }
+
+        "remove" | "rm" | "uninstall" => {
+            let project = package::require_project(&cwd)?;
+            // The cache directory is resolved through the same Context `add` uses. Reading it
+            // from the environment instead meant `remove --cache-dir X --prune` silently
+            // pruned a different directory than the one the installs had written to.
+            let context = commands::Context::load(
+                flags.registry.as_deref(),
+                flags.cache_dir.as_deref(),
+                flags.offline,
+            )
+            .map_err(|e| {
+                eprintln!("terrakit: {e}");
+                Exit::Usage
+            })?;
+            // The shared cache survives removal by default, which is what `--keep-cache` says
+            // and what makes the cache worth having. `--prune` opts into dropping entries no
+            // installed package refers to. `--keep-cache` is accepted explicitly and wins over
+            // `--prune`, because the two together should mean the safe one.
+            let prune = flags.prune && !flags.keep_cache;
+            commands::remove(&project, &positionals, &context.cache_dir, prune, out_format)
         }
 
         // Specified in CLI_SPEC.md but not built: they need the registry, which is not hosted
@@ -329,7 +381,7 @@ fn run(args: &[String]) -> Outcome {
     }
 }
 
-const COMMANDS_NOT_YET_BUILT: &[&str] = &["remove", "update", "install", "cache", "bundle"];
+const COMMANDS_NOT_YET_BUILT: &[&str] = &["install", "cache", "bundle"];
 
 fn commands_validate(
     project: &package::Project,

@@ -202,6 +202,26 @@ impl Project {
         out
     }
 
+    /// Where this project's downloads are cached.
+    ///
+    /// Resolved here rather than passed in, so `terra remove --prune` prunes the directory the
+    /// installs actually used. Two independent resolutions would eventually disagree, and the
+    /// failure is a cache that grows without bound while looking healthy.
+    ///
+    /// `TERRAKIT_CACHE` and `XDG_CACHE_HOME` are read directly rather than through
+    /// `commands::Context`, because `package.rs` must not depend on the command layer. The
+    /// precedence is the same and is covered by a test.
+    pub fn default_cache_dir(&self) -> Option<PathBuf> {
+        if let Some(explicit) = std::env::var_os("TERRAKIT_CACHE") {
+            return Some(PathBuf::from(explicit));
+        }
+        if let Some(dir) = std::env::var_os("XDG_CACHE_HOME") {
+            return Some(PathBuf::from(dir).join("terrakit"));
+        }
+        let home = std::env::var_os("HOME").map(PathBuf::from)?;
+        Some(home.join(".cache").join("terrakit"))
+    }
+
     pub fn packages_for(&self, country: &str) -> Vec<InstalledPackage> {
         let upper = country.to_uppercase();
         self.installed()
@@ -286,3 +306,55 @@ pub fn human_coord(value: f64) -> String {
     format!("{value:.4}")
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_cache_location_follows_the_documented_precedence() {
+        // `remove --prune` must reach the same directory `add` wrote to. Two independent
+        // resolutions would eventually disagree, and the symptom is a cache that grows without
+        // bound while looking healthy — nothing reports an error, it just never shrinks.
+        let project = Project::at(PathBuf::from("/tmp/proj"));
+
+        // SAFETY: single-threaded test; each variable is restored before the next assertion and
+        // removed at the end, so no other test observes a modified environment.
+        unsafe {
+            std::env::remove_var("TERRAKIT_CACHE");
+            std::env::remove_var("XDG_CACHE_HOME");
+            std::env::set_var("HOME", "/home/tester");
+            assert_eq!(
+                project.default_cache_dir(),
+                Some(PathBuf::from("/home/tester/.cache/terrakit")),
+                "with nothing set, the default follows HOME"
+            );
+
+            std::env::set_var("XDG_CACHE_HOME", "/xdg");
+            assert_eq!(
+                project.default_cache_dir(),
+                Some(PathBuf::from("/xdg/terrakit")),
+                "XDG_CACHE_HOME wins over HOME"
+            );
+
+            std::env::set_var("TERRAKIT_CACHE", "/explicit");
+            assert_eq!(
+                project.default_cache_dir(),
+                Some(PathBuf::from("/explicit")),
+                "an explicit cache wins over both"
+            );
+
+            std::env::remove_var("TERRAKIT_CACHE");
+            std::env::remove_var("XDG_CACHE_HOME");
+            std::env::remove_var("HOME");
+        }
+    }
+
+    #[test]
+    fn human_bytes_stays_readable_at_both_ends() {
+        assert_eq!(human_bytes(0), "0 B");
+        assert_eq!(human_bytes(999), "999 B");
+        assert_eq!(human_bytes(1024), "1.0 KB");
+        assert_eq!(human_bytes(10_354_688), "9.9 MB");
+        assert_eq!(human_bytes(24_465_408), "23.3 MB");
+    }
+}
