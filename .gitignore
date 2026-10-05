@@ -1,0 +1,48 @@
+# TerraKit working directory
+
+# Rust
+cli/target/
+**/*.rs.bk
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Kotlin / Gradle
+.gradle/
+sdk/kotlin/**/build/
+local.properties
+
+# Swift
+.build/
+.swiftpm/
+*.xcodeproj
+DerivedData/
+
+# Generated packages — manifests are committed, data is not.
+# Reproducible builds mean data is regenerated from pinned inputs, never hand-edited.
+datasets/**/*.sqlite
+datasets/**/*.sqlite.zst
+datasets/**/*.json.gz
+
+# Cache and local state
+.terrakit/
+*.lock.tmp
+
+# macOS
+.DS_Store
+
+# Editors
+.idea/
+*.swp
+.vscode/

@@ -1,0 +1,43 @@
+MIT License
+
+Copyright (c) 2026 TerraKit contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+--------------------------------------------------------------------------------
+
+NOTE ON DATA LICENSING
+
+This license covers the SOFTWARE ONLY — the CLI, SDKs, data pipeline, registry,
+schemas and documentation in this repository.
+
+It grants NO rights to any geographic DATA.
+
+Generated data packages are licensed separately, per source, and are declared in
+each package's manifest.json:
+
+    manifest.license            e.g. "CC-BY-4.0"
+    manifest.sources[].license  per-source license
+    manifest.attribution        required attribution notices
+
+Packages derived from OpenStreetMap are licensed ODbL 1.0, which imposes
+share-alike obligations on the derived database.
+
+Accepting this software license does not discharge any attribution obligation
+for a data package. See LICENSING.md, or call Terra.attribution from the SDKs.
