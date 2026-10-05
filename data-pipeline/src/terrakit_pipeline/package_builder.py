@@ -70,6 +70,8 @@ class PackageWriter:
         self.schema_dir = schema_dir
         self.db_path = out_dir / "data.sqlite"
         self.conn: sqlite3.Connection | None = None
+        # Country rows awaiting their capital, see insert_countries.
+        self._pending_capitals: list[tuple] = []
         self.counts: dict[str, int] = {}
         # Source ids that must exist in data_sources before places rows can
         # reference them. Enforced rather than trusted: a place pointing at a
@@ -176,19 +178,46 @@ class PackageWriter:
         self.counts["languages"] = len(languages)
         self.counts["timezones"] = len(timezones)
 
-    def insert_countries(self, country_rows: list[tuple]) -> None:
+    def insert_countries(
+        self,
+        country_rows: list[tuple],
+        language_rows: list[tuple] | None = None,
+    ) -> None:
         assert self.conn is not None
+
+        # Countries go in with `capital_place_id` omitted; `set_capitals()` fills
+        # it once the places exist. The two references are genuinely circular —
+        # a country points at one of its own places and every place points back at
+        # its country — so they cannot both be satisfied by the first INSERT.
+        # Inserting the capital here fails the foreign key; dropping the
+        # constraint would turn it into an unenforced free-text column, and a wrong
+        # capital in a logistics application is worse than a missing one.
         self.conn.executemany(
             """
             INSERT INTO countries (
                 id, iso2, iso3, numeric_code, name, name_norm, continent_code,
-                capital_place_id, currency_code, phone_code, internet_tld,
+                currency_code, phone_code, internet_tld,
                 driving_side, latitude, longitude, flag_emoji, independent
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            country_rows,
+            [
+                # Index 7 of a country row is capital_place_id.
+                (row[0], row[1], row[2], row[3], row[4], row[5], row[6],
+                 row[8], row[9], row[10], row[11], row[12], row[13], row[14],
+                 row[15])
+                for row in country_rows
+            ],
         )
+        self._pending_capitals = list(country_rows)
         self.counts["countries"] = len(country_rows)
+
+        if language_rows:
+            self.conn.executemany(
+                "INSERT INTO country_languages (country_iso2, lang, is_official) "
+                "VALUES (?, ?, ?)",
+                language_rows,
+            )
+            self.counts["country_languages"] = len(language_rows)
 
     def insert_data_sources(self, rows: list[tuple]) -> None:
         assert self.conn is not None
@@ -288,6 +317,27 @@ class PackageWriter:
                 "alternate_names": len(build.alternate_names),
             }
         )
+
+    def set_capitals(self) -> None:
+        """
+        Fill `countries.capital_place_id` now that the places exist.
+
+        Separate from `insert_countries` because of the circular foreign key
+        described there. A capital that did not resolve to a place in this package
+        is left NULL rather than guessed, and the caller reports it.
+        """
+        conn = self.conn
+        if conn is None or not self._pending_capitals:
+            return
+        updates = [
+            (row[7], row[1]) for row in self._pending_capitals if row[7] is not None
+        ]
+        if updates:
+            conn.executemany(
+                "UPDATE countries SET capital_place_id = ?1 WHERE iso2 = ?2", updates
+            )
+            self.counts["capitals_resolved"] = len(updates)
+        self._pending_capitals = []
 
     def _insert_names(self, build: BuildResult) -> None:
         """
@@ -480,6 +530,7 @@ def build_package(
     continent_rows,
     country_rows,
     source_rows,
+    country_language_rows=None,
 ) -> tuple[Path, Path]:
     """
     Full package build. Returns (data.sqlite path, manifest.json path).
@@ -496,9 +547,10 @@ def build_package(
         timezones=timezone_rows,
         continents=continent_rows,
     )
-    writer.insert_countries(country_rows)
+    writer.insert_countries(country_rows, country_language_rows)
     writer.insert_data_sources(source_rows)
     writer.insert_all(build)
+    writer.set_capitals()
     db_path = writer.finalize()
 
     raw_size = db_path.stat().st_size

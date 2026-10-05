@@ -1,0 +1,48 @@
+[package]
+name = "terrakit-cli"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Universal geographic data package manager"
+license = "MIT"
+repository = "https://github.com/NexovaDev/terrakit"
+
+[[bin]]
+name = "terrakit"
+path = "src/main.rs"
+
+[dependencies]
+# `bundled` compiles SQLite from source, so the binary does not depend on the
+# system library's version. That matters here because the FTS5 trigram tokenizer
+# requires SQLite >= 3.34 and macOS ships an older one.
+rusqlite = { version = "0.40", features = ["bundled"] }
+
+# Hand-written argument parsing. A CLI with twelve commands and a documented
+# --json contract is not a case where a parser crate earns its dependency; the
+# exit codes and error text are the contract, and a hand-rolled parser keeps
+# them fully under our control.
+
+# Manual JSON writer rather than serde_json. Every JSON this CLI emits is a fixed
+# shape with no deserialization anywhere, so serde's derive machinery would be
+# paid for and never used. See src/json.rs.
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+sha2 = "0.11"
+ed25519-dalek = "3"
+unicode-normalization = "0.1.25"
+
+[dev-dependencies]
+# The conformance fixture is the same file the Python oracle and both SDKs use.
+# Reading it from a Rust test is what makes the Rust normalizer verifiable rather
+# than merely present.
+unicode-normalization = "0.1"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+

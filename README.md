@@ -47,7 +47,7 @@ No API key. No network call. No geographic database to build and maintain.
 | Package validation | **working** — §30 rules, zero errors on all four |
 | Reproducible builds | **verified** — byte-identical across runs |
 | Localized / exonym / historic names | **working** — 19.2 M upstream rows, streamed |
-| Rust CLI | specified ([`CLI_SPEC.md`](CLI_SPEC.md)), not built |
+| Rust CLI | **working** — read-only commands complete; `add`/`install` need the registry |
 | Swift SDK | specified ([`SDK_SPEC.md`](SDK_SPEC.md)), not built |
 | Kotlin SDK | specified, not built |
 | Registry | static layout specified, not hosted |
@@ -76,9 +76,52 @@ Terra.country("TR").name         ->  "Türkiye"  (not "Turkey")
 ```
 
 ```bash
-./scripts/test.sh                          # 4 suites, all passing
+./scripts/test.sh                          # 7 suites, all passing
 ./scripts/check_reproducible.sh TR         # byte-identical rebuild
 ```
+
+### CLI
+
+The read-only commands are complete and query real packages:
+
+```console
+$ terrakit search Constantinople
+  CITY       Istanbul                 Istanbul, TR                 15 701 602
+
+  1 result(s) in 2 ms
+
+$ terrakit search イスタンブール
+  PROVINCE   Istanbul                 Türkiye, TR                  15 701 602
+  CITY       Istanbul                 Istanbul, TR                 15 701 602
+
+$ terrakit info TR
+Türkiye (TR/TUR /792)
+    Capital      Ankara
+    Driving      right
+    Languages    av, az, diq, ku, tr
+    Names        20769 localized in 245 languages, 870 alternates
+
+$ terrakit list
+  CC    LEVEL         VERSION              SIZE  INTEGRITY
+  DE    postal        2026.10.1+a6c3    23.3 MB  verified
+  TR    postal        2026.10.1+9920     9.9 MB  verified
+```
+
+A single tampered byte is caught, and `validate` exits `3` rather than `1` so a CI script can tell
+"the package is not trustworthy" from "something broke":
+
+```console
+$ terrakit validate TR
+✗ TR (2026.10.1+9920) — modified
+  ✗ integrity: modified (modified)
+    errors: 1, warnings: 1
+$ echo $?
+3
+```
+
+`add`, `remove`, `update`, `install`, `cache` and `bundle` are specified in
+[`CLI_SPEC.md`](CLI_SPEC.md) but not built: they need the registry, which is not hosted yet. They
+say so rather than pretending the command does not exist.
 
 Read the specification documents before contributing. They are the source of truth, and code that
 disagrees with them is a bug.

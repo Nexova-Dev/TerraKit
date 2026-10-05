@@ -106,8 +106,16 @@ Anything touching normalization, search or name handling must pass the shared go
 python3 tests/conformance/run_normalization.py   # oracle
 swift test --filter NormalizationConformance     # Swift
 ./gradlew :test --tests "*NormalizationConformance*"   # Kotlin
-cargo test --package terrakit-cli normalization  # CLI
+cargo test --manifest-path cli/Cargo.toml --test normalize   # CLI
 ```
+
+The Rust CLI reads the same `tests/fixtures/normalization.json` through a Cargo integration test, so
+its normalizer is held to the identical 48 vectors rather than to a hand-copied subset. That is the
+mechanism behind the cross-language determinism claim in
+[`ARCHITECTURE.md`](ARCHITECTURE.md#8-cross-language-determinism): a divergence is a CI failure in
+whichever implementation is wrong, not a bug report from a user. The dakuten defect
+([`DATA_MODEL.md` §1](DATA_MODEL.md#1-core-principle-type-and-level-are-different-things) and
+`core/spec/normalization.md` §2) is what this caught before the SDKs existed.
 
 `tests/fixtures/normalization.json` is the specification made executable.
 

@@ -45,6 +45,16 @@ run_suite "package schema smoke test" \
 run_suite "internal documentation links" \
   python3 tools/check_links.py
 
+# Rust CLI. Skipped rather than failed when cargo is absent, so the suite still
+# runs on a machine without a Rust toolchain — but never silently: the skip is
+# printed.
+if command -v cargo > /dev/null 2>&1; then
+  run_suite "Rust CLI (unit + normalization conformance)" \
+    cargo test --manifest-path cli/Cargo.toml --quiet
+else
+  printf '\n\033[1m=== Rust CLI\033[0m\n  SKIPPED: cargo not found\n'
+fi
+
 printf '\n\033[1m=== summary\033[0m\n'
 for suite in "${PASSED[@]:-}"; do
   [[ -n "$suite" ]] && printf '  \033[32mPASS\033[0m %s\n' "$suite"

@@ -316,13 +316,52 @@ def cmd_build(args) -> int:
 
     continent_rows = [_continent(info.continent)]
 
+    # The country row carries the display name the promotion step chose, so
+    # `countries.name` and `places.name` agree. Leaving `countries.name` as
+    # countryInfo's English value made `terra info TR` print "Turkey" while
+    # `terra search Türkiye` returned the country — two answers to the same
+    # question from one package.
+    country_display_name = country_row.name if country_row is not None else info.name
+
+    # Capital, resolved by name against the places the build actually contains.
+    # Left NULL when unresolvable rather than guessed: a wrong capital in a
+    # logistics application is worse than an absent one.
+    capital_place_id = None
+    if info.capital:
+        target = normalize(info.capital)
+        for place in build.places:
+            if place.name_norm == target and place.level > 1:
+                capital_place_id = place.id
+                break
+        if capital_place_id is None:
+            print(
+                f"  note: capital {info.capital!r} is not in this package; "
+                f"countries.capital_place_id left empty"
+            )
+
     country_rows = [
         (
             f"country:{country}", info.iso2, info.iso3, info.numeric_code,
-            info.name, normalize(info.name), info.continent, None,
+            country_display_name, normalize(country_display_name),
+            info.continent, capital_place_id,
             info.currency_code, f"+{info.phone}" if info.phone else None,
-            info.tld or None, None, None, None, None, 1,
+            info.tld or None, _driving_side(country),
+            # The country's own coordinates, copied from the hierarchy anchor.
+            # countryInfo publishes no country centroid, so _backfill derives
+            # one from the administrative areas; `terra info` showed null while
+            # `terra nearest` found the country, which is two answers to the same
+            # question from one package.
+            country_row.latitude if country_row is not None else None,
+            country_row.longitude if country_row is not None else None,
+            None, 1,
         )
+    ]
+
+    # Official languages, from countryInfo. The column order there is
+    # priority order, and `terra info` shows them in it.
+    country_language_rows = [
+        (info.iso2, code, 1 if index == 0 else 0)
+        for index, code in enumerate(_language_codes(info.languages))
     ]
 
     source_rows = [
@@ -368,6 +407,7 @@ def cmd_build(args) -> int:
         timezone_rows=timezone_rows,
         continent_rows=continent_rows,
         country_rows=country_rows,
+        country_language_rows=country_language_rows,
         source_rows=source_rows,
     )
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -476,6 +516,57 @@ def _country_timezone_ids(country: str) -> list[str]:
             "America/Los_Angeles", "America/Anchorage", "Pacific/Honolulu",
         ],
     }.get(country, [])
+
+
+#: Right-hand traffic unless stated. ISO 3166 does not publish a driving-side
+#: field, and GeoNames does not either, so this is the one place in the pipeline
+#: where a value comes from outside the sources — and it is recorded as such rather
+#: than presented as sourced data.
+_RIGHT_HAND_DRIVING: frozenset[str] = frozenset({
+    "AL", "AD", "AT", "BY", "BE", "BA", "BG", "HR", "CZ", "DK", "EE", "FI",
+    "FR", "DE", "GR", "HU", "IS", "IT", "LV", "LI", "LT", "LU", "MT", "MD",
+    "MC", "ME", "NL", "MK", "NO", "PL", "PT", "RO", "RU", "SM", "RS", "SK",
+    "SI", "ES", "SE", "CH", "TR", "UA", "GB", "VA", "XK",
+})
+_LEFT_HAND_DRIVING: frozenset[str] = frozenset({
+    "AG", "AU", "BS", "BB", "BZ", "BM", "BW", "CA", "DM", "FJ", "GD", "GM",
+    "GH", "GD", "GY", "HK", "IN", "ID", "IE", "JM", "JP", "KE", "KI", "KN",
+    "LS", "LR", "MO", "MS", "MU", "MV", "MW", "MY", "MZ", "NA", "NR", "NP",
+    "NZ", "NI", "NE", "NG", "OM", "PK", "PG", "PY", "PE", "SC", "SL", "SB",
+    "SO", "SR", "SZ", "TZ", "TH", "TL", "TO", "TT", "UG", "US", "VC", "WS",
+    "YE", "ZA", "ZW",
+})
+
+
+def _driving_side(country_iso2: str) -> str | None:
+    """
+    Which side of the road traffic keeps to.
+
+    Both sides occur, and getting it wrong sends a taxi the wrong way, so it is
+    worth a column. Neither ISO 3166 nor GeoNames publishes the field, so the
+    values come from a table in this file rather than from the sources — which is
+    why `countries.driving_side` is NULL rather than wrong when a country is
+    missing from it.
+    """
+    code = country_iso2.upper()
+    if code in _RIGHT_HAND_DRIVING:
+        return "right"
+    if code in _LEFT_HAND_DRIVING:
+        return "left"
+    return None
+
+
+def _language_codes(languages_field: str) -> list[str]:
+    """
+    CountryInfo's `languages` field, reduced to bare ISO 639-1 codes.
+
+    'tr-TR,ku,diq,az,av' -> ['tr', 'ku', 'diq', 'az', 'av'].
+    """
+    return [
+        token.split("-", 1)[0].strip().lower()
+        for token in languages_field.split(",")
+        if token.strip()
+    ]
 
 
 def _currency_rows(code: str, name: str) -> list[tuple[str, str, str | None, int]]:

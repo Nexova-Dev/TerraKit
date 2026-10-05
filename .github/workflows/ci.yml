@@ -99,6 +99,76 @@ jobs:
           path: .ci-datasets/*/manifest.json
           retention-days: 7
 
+  cli:
+    name: Rust CLI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: cli
+
+      # The bundled SQLite build must contain FTS5 with the trigram tokenizer and
+      # R*Tree. Without them the data model's search and nearest-location paths do
+      # not exist, so this is checked rather than assumed (ADR-003, ADR-005).
+      - name: Run CLI tests
+        run: cargo test --manifest-path cli/Cargo.toml --verbose
+
+      - name: Build release binary
+        run: cargo build --manifest-path cli/Cargo.toml --release
+
+      - name: Smoke test the binary
+        run: |
+          set -euo pipefail
+          BIN=cli/target/release/terrakit
+          "$BIN" --help > /dev/null
+          "$BIN" version
+          # Exit codes are part of the contract (CLI_SPEC.md section 1).
+          "$BIN" search anything > /dev/null 2>&1 || true
+          if "$BIN" bogus-command > /dev/null 2>&1; then
+            echo "::error::an unknown command must exit non-zero"
+            exit 1
+          fi
+
+      - name: Verify a real package end to end
+        # Builds one country with the pipeline and queries it with the CLI. This is
+        # the cross-component check that matters most: it proves the Python
+        # pipeline's bytes, the Rust CLI's normalizer and the SQLite schema agree.
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: |
+          set -euo pipefail
+          python3 -m terrakit_pipeline build GE --level cities \
+            --out "$RUNNER_TEMP/packages" --repo-root "$PWD" || \
+            PYTHONPATH=data-pipeline/src python3 -m terrakit_pipeline build GE \
+              --level cities --out "$RUNNER_TEMP/packages" --repo-root "$PWD"
+      - name: Search the freshly built package with the CLI
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          REPO="$GITHUB_WORKSPACE"
+          "$REPO/cli/target/release/terrakit" init
+          python3 - "$RUNNER_TEMP" <<'PY'
+          import pathlib, shutil, sys
+          root = pathlib.Path(sys.argv[1])
+          src = root / "packages"
+          dst = root / ".terrakit" / "packages"
+          for d in sorted(src.glob("terrakit-data-*")):
+              country = d.name.split("-")[2].upper()
+              version = d.name.split("-", 3)[3]
+              (dst / country).mkdir(parents=True, exist_ok=True)
+              shutil.copytree(d, dst / country / version, dirs_exist_ok=True)
+          PY
+          "$REPO/cli/target/release/terrakit" list
+          "$REPO/cli/target/release/terrakit" validate
+          "$REPO/cli/target/release/terrakit" search Tbilisi
+          "$REPO/cli/target/release/terrakit" doctor
+
   future:
     name: Swift SDK
     runs-on: macos-latest
