@@ -42,11 +42,33 @@ No API key. No network call. No geographic database to build and maintain.
 | Architecture, data model, package format | defined, under review |
 | Normalization spec | normative, with conformance vectors |
 | ADR-001 … ADR-007 | accepted |
-| Rust CLI | not started |
-| Swift SDK | not started |
-| Kotlin SDK | not started |
-| Data pipeline | not started |
-| Registry | not started |
+| SQLite schema | v1, applied and exercised by every package |
+| Data pipeline | **working** — builds TR, GE, DE, JP from live GeoNames data |
+| Package validation | **working** — §30 rules, zero errors on all four |
+| Reproducible builds | **verified** — byte-identical across runs |
+| Localized / alternate names | schema ready, ingestion not written |
+| Rust CLI | specified ([`CLI_SPEC.md`](CLI_SPEC.md)), not built |
+| Swift SDK | specified ([`SDK_SPEC.md`](SDK_SPEC.md)), not built |
+| Kotlin SDK | specified, not built |
+| Registry | static layout specified, not hosted |
+
+### Packages built from live data
+
+```bash
+python3 -m terrakit_pipeline build TR --level postal
+```
+
+| Country | Places | Postal codes | Package |
+|---|---|---|---|
+| TR | 5 091 | 2 953 | 6.0 MB |
+| DE | 11 957 | 10 813 | 13 MB |
+| JP | 3 428 | 142 577 | 53 MB |
+| GE | 315 | none published | 0.5 MB |
+
+```bash
+./scripts/test.sh                          # 4 suites, all passing
+./scripts/check_reproducible.sh TR         # byte-identical rebuild
+```
 
 Read the specification documents before contributing. They are the source of truth, and code that
 disagrees with them is a bug.
@@ -63,9 +85,11 @@ disagrees with them is a bug.
 | [`core/spec/normalization.md`](core/spec/normalization.md) | Normative query normalization algorithm |
 | [`LICENSING.md`](LICENSING.md) | Source licenses and attribution obligations |
 | [`SECURITY.md`](SECURITY.md) | Threat model and signature scheme |
-| [`CLI_SPEC.md`](CLI_SPEC.md) | Command surface *(planned)* |
-| [`SDK_SPEC.md`](SDK_SPEC.md) | Swift and Kotlin API *(planned)* |
-| [`DATA_PIPELINE.md`](DATA_PIPELINE.md) | Ingestion stages *(planned)* |
+| [`data-pipeline/sources/README.md`](data-pipeline/sources/README.md) | Pinned sources and known upstream gaps |
+| [`CLI_SPEC.md`](CLI_SPEC.md) | Command surface, exit codes, stdout/stderr contract |
+| [`SDK_SPEC.md`](SDK_SPEC.md) | Swift and Kotlin public API |
+| [`DATA_PIPELINE.md`](DATA_PIPELINE.md) | Ingestion stages and pipeline decisions |
+| [`API_SPEC.md`](API_SPEC.md) | Hosted API *(stub — optional, never on the SDK's path)* |
 | [`docs/adr/`](docs/adr/) | Architecture decision records |
 
 ---
@@ -125,6 +149,21 @@ level 7 and the `street` ID namespace.
 Also deferred, per the specification: delta packages (designed,
 [ADR-006](docs/adr/ADR-006-row-level-deltas.md)), hosted API and dashboard, geocoding and routing,
 and SDKs beyond Swift and Kotlin.
+
+### Known gaps in the current pipeline
+
+- **Localized names are not ingested.** `place_names` and `place_alternate_names` exist in the
+  schema and are validated, but `alternateNamesV2.zip` is not read yet, so search relies on
+  `places.name` alone. `Terra.search("Constantinople")` will not reach İstanbul until it is. This
+  is the next pipeline stage and the largest remaining gap.
+- **Country names are English.** GeoNames publishes `Turkey`; the endonym `Türkiye` needs
+  `alternateNames`.
+- **No boundaries and no geocoding**, per spec §46.
+
+Upstream data defects encountered while building the MVP countries — Georgia having no postal
+file, `admin1_code` of `00`, one Turkish settlement with the timezone `Asia/Baghdad` — are each
+recorded with the handling in
+[`data-pipeline/sources/README.md`](data-pipeline/sources/README.md).
 
 ---
 

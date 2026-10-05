@@ -39,6 +39,9 @@ run_suite "pipeline unit tests" \
 run_suite "package schema smoke test" \
   bash scripts/test_schema.sh
 
+run_suite "internal documentation links" \
+  python3 tools/check_links.py
+
 printf '\n\033[1m=== summary\033[0m\n'
 for suite in "${PASSED[@]:-}"; do
   [[ -n "$suite" ]] && printf '  \033[32mPASS\033[0m %s\n' "$suite"

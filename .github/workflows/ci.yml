@@ -34,6 +34,12 @@ jobs:
       - name: Run test suites
         run: ./scripts/test.sh
 
+      - name: Fail if docs disagree with docs
+        # The specification is the source of truth for this project, and it is
+        # read rather than run. A broken cross-reference sends a contributor to a
+        # file that does not exist and they conclude the design was never decided.
+        run: python3 tools/check_links.py
+
   reproducible:
     name: Reproducible build
     runs-on: ubuntu-latest

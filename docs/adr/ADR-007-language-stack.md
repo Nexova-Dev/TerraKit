@@ -72,7 +72,7 @@ add SKIE and XCFramework complexity before anyone needs them.
 - Five languages means five toolchains in CI and five sets of contribution instructions.
 - Cross-language normalization consistency is a real risk, addressed by shared golden test vectors in
   `tests/fixtures/` executed for every language
-  ([`ARCHITECTURE.md` §8](ARCHITECTURE.md#8-cross-language-determinism)).
+  ([`ARCHITECTURE.md` §8](../../ARCHITECTURE.md#8-cross-language-determinism)).
 - Rust has the steepest contribution curve of the five. Mitigated by keeping the CLI's command
   surface mechanical: fetch, verify, extract, move.
 
