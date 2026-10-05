@@ -47,7 +47,8 @@ No API key. No network call. No geographic database to build and maintain.
 | Package validation | **working** — §30 rules, zero errors on all four |
 | Reproducible builds | **verified** — byte-identical across runs |
 | Localized / exonym / historic names | **working** — 19.2 M upstream rows, streamed |
-| Rust CLI | **working** — read-only commands complete; `add`/`install` need the registry |
+| Rust CLI | **working** — query commands and `add` complete; `remove`/`update`/`bundle` to come |
+| Registry | **working** — static `index.json` on object storage, Ed25519-signed releases |
 | Swift SDK | specified ([`SDK_SPEC.md`](SDK_SPEC.md)), not built |
 | Kotlin SDK | specified, not built |
 | Registry | static layout specified, not hosted |
@@ -119,9 +120,64 @@ $ echo $?
 3
 ```
 
-`add`, `remove`, `update`, `install`, `cache` and `bundle` are specified in
-[`CLI_SPEC.md`](CLI_SPEC.md) but not built: they need the registry, which is not hosted yet. They
-say so rather than pretending the command does not exist.
+### Installing
+
+`add` resolves the version, verifies the signature **before** fetching any bytes, checks free space,
+downloads with resume, and installs by `rename` — so a package is either absent or complete:
+
+```console
+$ terrakit add TR GE
+  resolving terrakit-data-tr from https://registry.terrakit.dev
+    signature verified (keyId=terrakit-release-2026)
+    downloading 1.7 MB
+    downloaded 1.7 MB (1 attempt(s))
+    installed 9.9 MB (.terrakit/packages/TR/2026.10.1-9920)
+  resolving terrakit-data-ge from https://registry.terrakit.dev
+    signature verified (keyId=terrakit-release-2026)
+    installed  GE 2026.10.1+e83e (cities, 1.3 MB, signed by terrakit-release-2026)
+```
+
+A verification failure is exit `3`, distinct from a runtime failure, so a CI script can refuse to
+trust the result without treating a flaky network as an attack:
+
+```console
+$ terrakit add TR; echo $?
+terrakit: package verification failed.
+       signed by key "rogue-2026", which is not trusted.
+       Keys consulted: terrakit-release-2026 [built-in].
+       To trust it, add [[keys]] with that id and publicKey to ~/.config/terrakit/config.toml.
+       Verify the public key through a channel independent of this download before you do —
+       a key delivered alongside the package it signs proves nothing.
+3
+```
+
+`file://` is a supported registry transport, which is what makes mirrors, air-gapped installs and
+this project's own tests possible without a network.
+
+### Registry
+
+Static files, no server — `aws s3 sync` or `rclone sync` is the whole deployment. Published
+versions are immutable, the index is byte-reproducible, and URLs are relative so a copy of the
+tree is read from the copy:
+
+```bash
+# build and sign a release
+PYTHONPATH=data-pipeline/src python3 -m terrakit_pipeline publish datasets/terrakit-data-tr-* \
+  --sign-key /path/to/release-key.pem --sign-key-id terrakit-release-2026
+
+# publish the tree
+tools/build_registry.py datasets/ --out registry/ \
+  --base-url https://registry.terrakit.dev \
+  --upload aws:s3://my-bucket/terrakit --production
+```
+
+`--production` refuses anything signed with the committed development key. That guarantee is
+tested, not just documented: [`scripts/test_registry.sh`](scripts/test_registry.sh) is 27 checks
+covering install, idempotency, relocatability, reproducibility, the four refusals, and the
+`--json` contract.
+
+`remove`, `update`, `cache`, `bundle` and `install` are specified in [`CLI_SPEC.md`](CLI_SPEC.md)
+but not built. They say so rather than pretending the command does not exist.
 
 Read the specification documents before contributing. They are the source of truth, and code that
 disagrees with them is a bug.

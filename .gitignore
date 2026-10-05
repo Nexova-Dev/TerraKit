@@ -1,48 +1,16 @@
-# TerraKit working directory
-
-# Rust
+# Build output
 cli/target/
-**/*.rs.bk
+*.sqlite
+*.sqlite.zst
 
-# Python
-__pycache__/
-*.py[cod]
-.venv/
-venv/
-.mypy_cache/
-.pytest_cache/
-.ruff_cache/
+# The development keypair IS committed on purpose -- see PACKAGE_FORMAT.md section 11.
+# Only real release keys are ignored, because losing one is recoverable and leaking one is not.
+*.pem
+!keys/dev-ed25519.pem
 
-# Node
-node_modules/
-dist/
-*.tsbuildinfo
-
-# Kotlin / Gradle
-.gradle/
-sdk/kotlin/**/build/
-local.properties
-
-# Swift
-.build/
-.swiftpm/
-*.xcodeproj
-DerivedData/
-
-# Generated packages — manifests are committed, data is not.
-# Reproducible builds mean data is regenerated from pinned inputs, never hand-edited.
-datasets/**/*.sqlite
-datasets/**/*.sqlite.zst
-datasets/**/*.json.gz
-
-# Cache and local state
+# Local caches and scratch
+.cache/
 .terrakit/
-*.lock.tmp
-
-# macOS
+__pycache__/
+*.pyc
 .DS_Store
-
-# Editors
-.idea/
-*.swp
-.vscode/

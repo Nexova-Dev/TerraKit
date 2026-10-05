@@ -1,0 +1,6 @@
+{
+  "algorithm": "ed25519",
+  "keyId": "terrakit-dev-2026",
+  "publicKey": "4c16e2e2a4c0c57ebe4fe3484c69a7ba61577a22df6e3ec757c376d54f2cdf7b",
+  "note": "Development key. Not a secret. tools/build_registry.py --production refuses packages signed with it."
+}

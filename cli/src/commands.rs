@@ -6,13 +6,18 @@
 //! progress bar in the same terminal — see `CLI_SPEC.md` §1.
 
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use crate::exit::{Exit, Outcome, failure, usage_error};
 use crate::normalize::normalize;
 use crate::package::{self, Project, human_bytes, human_coord, open_database};
 use crate::verify;
+
+use crate::download;
+use crate::install;
+use crate::registry::{self, VersionRange};
+use crate::signature::{self, Config};
 use crate::query::{self, SearchOptions};
 
 /// Whether output should be machine-readable.
@@ -73,7 +78,7 @@ pub const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub fn version(out_format: Format) -> Outcome {
     match out_format {
         Format::Json => emit(&format!(
-            "{{\"name\":\"terrakit\",\"version\":{},\n \"rustc\":{},\"target\":{}}}",
+            "{{\"name\":\"terrakit\",\"version\":{},\"rustc\":{},\"target\":{}}}",
             jstr(CLI_VERSION),
             jstr(option_env!("TERRAKIT_RUSTC_VERSION").unwrap_or("unknown")),
             jstr(std::env::consts::ARCH)
@@ -595,6 +600,647 @@ pub fn doctor(project: &Project, out_format: Format) -> Outcome {
     Ok(())
 }
 
+// --- add --------------------------------------------------------------------
+
+/// Whether stderr is a terminal.
+///
+/// Wrapped so the reason lives in one place rather than at each use site: this exists because
+/// in-place progress overwrites its line, which is noise anywhere else.
+fn is_terminal() -> bool {
+    // SAFETY: `isatty` takes a file descriptor, imposes no preconditions, and STDERR_FILENO is
+    // the constant 2.
+    unsafe { libc::isatty(libc::STDERR_FILENO) == 1 }
+}
+
+/// The resolved settings a command runs under.
+///
+/// Loaded once in `main` and passed in, so precedence is decided in one place rather than by
+/// which function happens to read which source. `CLI_SPEC.md` §3: flag, then environment, then
+/// config file, then the compiled-in default.
+#[derive(Debug, Clone)]
+pub struct Context {
+    pub registry: String,
+    pub cache_dir: PathBuf,
+    pub config: Config,
+    pub offline: bool,
+}
+
+impl Context {
+    pub fn load(
+        registry_flag: Option<&str>,
+        cache_flag: Option<&Path>,
+        offline: bool,
+    ) -> Result<Context, String> {
+        let path = signature::config_path();
+        let config = Config::load(&path).unwrap_or_else(|e| {
+            // A malformed config must not be silently ignored: it usually means a release key
+            // the user believes is trusted is not, and every install would then be refused with
+            // "unknown key", pointing at the registry instead of at the config.
+            eprintln!("terrakit: {e}");
+            eprintln!("       Fix it, or set TERRAKIT_CONFIG to a different file.");
+            std::process::exit(i32::from(Exit::Usage.code()));
+        });
+
+        // DEFAULT_REGISTRY is a constant rather than a network lookup, so a fresh install works
+        // without a bootstrapping step that could itself be tampered with.
+        let registry = registry_flag
+            .map(str::to_string)
+            .or_else(|| std::env::var("TERRAKIT_REGISTRY").ok())
+            .or_else(|| config.registry.clone())
+            .unwrap_or_else(|| DEFAULT_REGISTRY.to_string());
+
+        let cache_dir = cache_flag
+            .map(Path::to_path_buf)
+            .or_else(|| std::env::var_os("TERRAKIT_CACHE").map(PathBuf::from))
+            .or_else(|| config.cache_dir.clone())
+            .unwrap_or_else(default_cache_dir);
+
+        Ok(Context {
+            registry,
+            cache_dir,
+            config,
+            offline,
+        })
+    }
+
+    pub fn keyring(&self) -> std::collections::BTreeMap<String, signature::TrustedKey> {
+        self.config.keyring()
+    }
+}
+
+pub const DEFAULT_REGISTRY: &str = "https://registry.terrakit.dev";
+
+pub fn default_cache_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("XDG_CACHE_HOME") {
+        return PathBuf::from(dir).join("terrakit");
+    }
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    home.join(".cache").join("terrakit")
+}
+
+/// `terrakit add <CC>...`
+///
+/// The order below is the security contract, not a preference:
+///
+/// 1. resolve the version from the registry index
+/// 2. fetch the manifest and verify its **signature**
+/// 3. check compatibility (`schemaVersion`, `minReaderVersion`)
+/// 4. check free space
+/// 5. download the artifact, verifying the compressed digest
+/// 6. decompress into a staging directory, verifying the extracted digest
+/// 7. `rename` into place — the install becomes visible atomically
+/// 8. record the resolution in `terrakit.json`
+///
+/// Signing is verified before any bytes of the package are fetched, and before any space is
+/// consumed. Fetching first and verifying afterwards would mean an attacker-controlled registry
+/// can make the client download an arbitrary size before anything is checked — including before
+/// the client knows whether it should be talking to that registry at all.
+pub fn add(
+    project: &Project,
+    countries: &[String],
+    context: &Context,
+    options: AddOptions,
+    out_format: Format,
+) -> Outcome {
+    if countries.is_empty() {
+        return usage_error("add needs at least one country code, e.g. 'terrakit add TR'");
+    }
+
+    let mut manifest = match project.read_manifest() {
+        Ok(manifest) => manifest,
+        Err(reason) => {
+            eprintln!("terrakit: {reason}");
+            return Err(Exit::NotInstalled);
+        }
+    };
+
+    let mut installed_any = false;
+    let mut last_error: Option<Exit> = None;
+    let mut records: Vec<AddRecord> = Vec::new();
+
+    for country in countries {
+        let code = match registry::country_code(country) {
+            Ok(code) => code,
+            Err(reason) => {
+                eprintln!("terrakit: {reason}");
+                last_error = Some(Exit::Usage);
+                continue;
+            }
+        };
+
+        match add_one(project, &code, &mut manifest, context, &options) {
+            Ok(record) => {
+                installed_any = true;
+                records.push(record);
+            }
+            Err(code_) => last_error = Some(code_),
+        }
+    }
+
+    // The manifest is written once, after every country. Writing it per country means a failure
+    // halfway through leaves a manifest that promises packages the previous run installed but
+    // this one did not — or worse, that promises packages that were never installed at all.
+    if installed_any {
+        if let Err(e) = project.write_manifest(&manifest) {
+            return failure(format!("cannot write {}: {e}", project.manifest_path.display()));
+        }
+    }
+
+    match out_format {
+        Format::Json => {
+            emit(&format!(
+                "{{\"ok\":{},\"registry\":{},\"installed\":[{}]}}",
+                installed_any,
+                jstr(&context.registry),
+                records
+                    .iter()
+                    .map(AddRecord::to_json)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ));
+        }
+        Format::Human => {
+            for record in &records {
+                emit(&format!("  installed  {}", record.to_human()));
+            }
+        }
+    }
+
+    // A partial failure still fails, after everything that could succeed has run:
+    // `terrakit add TR XX GE` installs TR and GE, reports the bad code, and exits non-zero.
+    //
+    // Returning success because *something* worked is how a CI script ends up green with a
+    // country silently missing. The installs are already committed and are not rolled back —
+    // discarding working packages because a third argument was a typo helps nobody.
+    if let Some(code) = last_error {
+        return Err(code);
+    }
+    if !installed_any {
+        return Err(Exit::Failure);
+    }
+    Ok(())
+}
+
+/// What one installed package looks like afterwards.
+///
+/// A struct rather than a pre-rendered JSON string, because the same fact needs two renderings.
+/// Building the JSON eagerly meant the human output printed JSON fragments — which teaches users
+/// to pipe the tool into `jq` out of habit and then get confused when the human form is not
+/// parseable.
+#[derive(Debug, Clone)]
+pub struct AddRecord {
+    pub country: String,
+    pub version: String,
+    pub level: Option<String>,
+    pub size_bytes: u64,
+    pub signed_by: String,
+    pub status: &'static str,
+}
+
+impl AddRecord {
+    fn to_json(&self) -> String {
+        format!(
+            "{{\"country\":{},\"version\":{},\"level\":{},\"sizeBytes\":{},\"signedBy\":{},\"status\":{}}}",
+            jstr(&self.country),
+            jstr(&self.version),
+            jstr_opt(&self.level),
+            self.size_bytes,
+            jstr(&self.signed_by),
+            jstr(self.status),
+        )
+    }
+
+    fn to_human(&self) -> String {
+        let level = self.level.as_deref().unwrap_or("-");
+        let size = download::human_bytes(self.size_bytes);
+        match self.status {
+            "already-installed" => {
+                format!("{} {} is already installed ({level}, {size})", self.country, self.version)
+            }
+            _ => format!(
+                "{} {} ({level}, {size}, signed by {})",
+                self.country, self.version, self.signed_by
+            ),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AddOptions {
+    /// An explicit version, overriding both the pin in `terrakit.json` and the registry default.
+    pub version: Option<String>,
+    /// Request a level. Refused if the published version does not provide it — Georgia has no
+    /// postal data, so `terrakit add GE --level postal` says so rather than installing a
+    /// `cities` package under a `postal` promise.
+    pub level: Option<String>,
+    /// Reinstall even when the version is already present.
+    pub force: bool,
+}
+
+fn add_one(
+    project: &Project,
+    country: &str,
+    manifest: &mut package::ProjectManifest,
+    context: &Context,
+    options: &AddOptions,
+) -> Result<AddRecord, Exit> {
+    let package = registry::package_name_for(country).map_err(|e| {
+        eprintln!("terrakit: {e}");
+        Exit::Usage
+    })?;
+
+    progress(&format!(
+        "resolving {package} from {}",
+        context.registry
+    ));
+
+    // A fetch failure is a runtime failure, not "not found": reporting 4 makes a script treat
+    // an offline refusal and a genuinely absent country the same way, and sends the user
+    // looking for a typo rather than for their network.
+    let index = registry::fetch_package(&context.registry, &package, context.offline).map_err(|e| {
+        eprintln!("terrakit: {e}");
+        if context.offline { Exit::Failure } else { Exit::NotFound }
+    })?;
+
+    if index.versions.is_empty() {
+        eprintln!("terrakit: {package} has no published versions.");
+        return Err(Exit::NotFound);
+    }
+
+    // Precedence: an explicit --version, then the pin in terrakit.json, then the registry's
+    // own latest. An explicit request must beat a pin, or `terrakit add TR@2026.9.0` after a pin
+    // would install the pinned version and report success.
+    let requested: VersionRange = match &options.version {
+        Some(explicit) => VersionRange::parse(explicit).map_err(|e| {
+            eprintln!("terrakit: {e}");
+            Exit::Usage
+        })?,
+        None => match manifest.packages.get(country) {
+            Some(pinned) => VersionRange::parse(pinned).map_err(|e| {
+                eprintln!("terrakit: terrakit.json pins {country} to {pinned:?}: {e}");
+                Exit::Usage
+            })?,
+            None => VersionRange::Any,
+        },
+    };
+
+    let chosen = registry::select_version(&index.versions, &requested).map_err(|e| {
+        eprintln!("terrakit: {e}");
+        Exit::NotFound
+    })?;
+
+    let published_level = chosen.level.clone().or_else(|| {
+        index.latest.as_ref().and_then(|l| l.level.clone())
+    });
+    if let Some(wanted) = options.level.as_ref() {
+        if published_level.as_deref() != Some(wanted.as_str()) {
+            eprintln!(
+                "terrakit: {package}@{} is published at level {:?}, not {wanted:?}.",
+                chosen.version,
+                published_level.as_deref().unwrap_or("unknown")
+            );
+            if published_level.as_deref() == Some("cities") && wanted == "postal" {
+                eprintln!(
+                    "       GeoNames publishes no postal file for {country}, so the pipeline\n       demoted this package to 'cities'. The manifest declares that, rather\n       than shipping a package that returns no postal codes."
+                );
+            }
+            return Err(Exit::NotFound);
+        }
+    }
+
+    let version = chosen.version.clone();
+    let manifest_url = registry::manifest_for(&context.registry, &package, chosen);
+    let download_url = registry::download_for(&context.registry, &package, chosen).ok_or_else(|| {
+        eprintln!("terrakit: {package}@{version} has no download URL in the registry.");
+        Exit::Verification
+    })?;
+
+    // --- 2. manifest and signature ------------------------------------------
+    let manifest_bytes = download::fetch_text(&manifest_url, context.offline).map_err(|e| {
+        eprintln!("terrakit: {e}");
+        Exit::Failure
+    })?;
+
+    let signature_url = registry::signature_for(&manifest_url);
+    // A missing signature is a verification failure, not a transport failure, and the two must
+    // not share an exit code. Reporting "cannot fetch signature.json" for a package that was
+    // simply never signed points the user at their network instead of at the package, and
+    // returns 1 where a CI policy keys on 3 to mean "do not trust this".
+    let signature_text = match download::fetch_text(&signature_url, context.offline) {
+        Ok(text) => text,
+        Err(reason) => {
+            let missing = reason.contains("No such file")
+                || reason.contains("cannot read")
+                || reason.contains("404");
+            if missing {
+                eprintln!("terrakit: package verification failed.");
+                eprintln!("       {}", signature::SignatureFailure::Missing);
+                return Err(Exit::Verification);
+            }
+            eprintln!("terrakit: {reason}");
+            return Err(Exit::Failure);
+        }
+    };
+
+    let keyring = context.keyring();
+    let key_id = signature::verify(&signature_text, manifest_bytes.as_bytes(), &keyring).map_err(
+        |failure| {
+            eprintln!("terrakit: package verification failed.");
+            eprintln!("       {failure}");
+            // A refused signature is the one failure that must never be retried and must never
+            // be reported as a runtime error: it is exit 3.
+            Exit::Verification
+        },
+    )?;
+    progress(&format!("  signature verified (keyId={key_id})"));
+
+    // --- 3. compatibility ----------------------------------------------------
+    let manifest_value: serde_json::Value = serde_json::from_str(&manifest_bytes).map_err(|e| {
+        eprintln!("terrakit: {manifest_url} is not valid JSON: {e}");
+        Exit::Verification
+    })?;
+
+    check_compatibility(&manifest_value)?;
+
+    // --- 4. space ------------------------------------------------------------
+    let database_entry = manifest_value
+        .get("files")
+        .and_then(|files| files.as_array())
+        .and_then(|files| {
+            files
+                .iter()
+                .find(|entry| entry.get("path").and_then(|p| p.as_str()) == Some("data.sqlite"))
+        })
+        .ok_or_else(|| {
+            eprintln!("terrakit: the manifest has no data.sqlite entry.");
+            Exit::Verification
+        })?;
+
+    let expected_sha256 = database_entry
+        .get("sha256")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            eprintln!("terrakit: the manifest records no sha256 for data.sqlite.");
+            Exit::Verification
+        })?;
+    let compressed_sha256 = database_entry
+        .get("compressedSha256")
+        .and_then(|v| v.as_str());
+    let extracted_size = database_entry
+        .get("rawSize")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    let compressed_size = database_entry
+        .get("compressedSize")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    let compression = database_entry
+        .get("compression")
+        .and_then(|v| v.as_str())
+        .unwrap_or("zstd");
+
+    let destination = project
+        .packages_dir
+        .join(country)
+        .join(registry::version_to_path_segment(&version));
+
+    if destination.exists() && !options.force {
+        // Report what is actually on disk rather than a zero placeholder: `--json` output that
+        // says 0 B for an installed 9.9 MB package is worse than no size field, because a script
+        // that sums it gets a plausible wrong answer.
+        if let Some(existing) = project
+            .installed()
+            .into_iter()
+            .find(|p| p.country == country && p.version == version)
+        {
+            progress(&format!(
+                "  {country}@{version} is already installed; nothing to do (--force to reinstall)"
+            ));
+            let integrity = crate::verify::verify_package(&existing.directory)
+                .map(|v| v.summary().to_string())
+                .unwrap_or_else(|_| "unverifiable".to_string());
+            record_resolution(manifest, country, &version, published_level.as_deref());
+            return Ok(AddRecord {
+                country: country.to_string(),
+                version,
+                level: published_level.clone(),
+                size_bytes: existing.size_on_disk(),
+                signed_by: integrity,
+                status: "already-installed",
+            });
+        }
+    }
+
+    let plan = install::InstallPlan {
+        country: country.to_string(),
+        version: version.clone(),
+        destination: destination.clone(),
+        extracted_size,
+        compressed_size,
+    };
+    install::check_space(&plan).map_err(|e| {
+        eprintln!("terrakit: {e}");
+        Exit::NoSpace
+    })?;
+
+    // --- 5. download ---------------------------------------------------------
+    let artifact = artifact_name(compression);
+    let cache_target = download::cache_path(
+        &context.cache_dir,
+        compressed_sha256.unwrap_or(expected_sha256),
+        &format!(".{}", artifact.rsplit('.').next().unwrap_or("bin")),
+    );
+
+    progress(&format!(
+        "  downloading {}",
+        download::human_bytes(compressed_size)
+    ));
+    // In-place progress overwrites its line with \r, which is only meaningful on a terminal.
+    // Piped or captured, it collects every intermediate percentage on one line.
+    let interactive = is_terminal();
+    let mut last_percent = -1i32;
+    let outcome = download::download(
+        &download_url,
+        &cache_target,
+        compressed_sha256.or(Some(expected_sha256)),
+        context.offline,
+        &mut |received, total| {
+            // Progress on stderr: stdout carries data (`CLI_SPEC.md` §1).
+            if interactive && total > 0 {
+                let percent = (received as f64 / total as f64 * 100.0) as i32;
+                if percent >= last_percent + 10 {
+                    last_percent = percent;
+                    eprint!("\r    {percent:>3}%  {}", download::human_bytes(received));
+                    let _ = std::io::Write::flush(&mut std::io::stderr());
+                }
+            }
+        },
+    );
+    if interactive {
+        eprintln!();
+    }
+    let outcome = match outcome {
+        Ok(outcome) => outcome,
+        Err(e) => {
+            eprintln!("terrakit: {e}");
+            return Err(download::exit_for(&e));
+        }
+    };
+    progress(&format!("  downloaded {}", outcome.summary()));
+
+    // --- 6. stage ------------------------------------------------------------
+    let staged = install::stage(
+        &cache_target,
+        &destination,
+        &registry::version_to_path_segment(&version),
+        expected_sha256,
+    )
+    .map_err(|e| {
+        eprintln!("terrakit: {e}");
+        download::exit_for(&e)
+    })?;
+
+    // The manifest and signature travel with the package, so a later `terrakit validate` can
+    // prove which key signed the copy on disk rather than only that its bytes are unchanged.
+    // A failure here discards the staged directory, so nothing half-written survives. The
+    // package is never committed without its manifest and signature, because `terra validate`
+    // could then not say which key signed what is on disk.
+    for (name, bytes) in [
+        ("manifest.json", manifest_bytes.as_bytes()),
+        ("signature.json", signature_text.as_bytes()),
+    ] {
+        if let Err(e) = std::fs::write(staged.directory.join(name), bytes) {
+            install::discard(&staged);
+            eprintln!("terrakit: cannot write {name} into the package: {e}");
+            return Err(Exit::Failure);
+        }
+    }
+
+    // --- 7. commit -----------------------------------------------------------
+    if destination.exists() {
+        install::discard(&staged);
+        eprintln!(
+            "terrakit: {} already exists. Refusing to overwrite it.",
+            destination.display()
+        );
+        return Err(Exit::Failure);
+    }
+    let committed = match install::commit(staged, &destination) {
+        Ok(committed) => committed,
+        Err(e) => {
+            eprintln!("terrakit: {e}");
+            return Err(Exit::Failure);
+        }
+    };
+
+    record_resolution(manifest, country, &version, published_level.as_deref());
+    progress(&format!(
+        "  installed {} ({})",
+        download::human_bytes(committed.size_on_disk),
+        destination.display()
+    ));
+
+    Ok(AddRecord {
+        country: country.to_string(),
+        version,
+        level: published_level.clone(),
+        size_bytes: committed.size_on_disk,
+        signed_by: key_id.clone(),
+        status: "installed",
+    })
+}
+
+/// On-disk name of a compressed artifact.
+///
+/// Must match `COMPRESSION_EXTENSIONS` in `release.py`. Duplicated rather than imported because
+/// one is Python and one is Rust and the alternative is shipping the pipeline as a library; the
+/// pairing is covered by the end-to-end test in `scripts/test.sh`, which installs from a real
+/// built registry and would fail with a 404 if the two drifted.
+fn artifact_name(compression: &str) -> String {
+    match compression {
+        "zstd" => "data.sqlite.zst".to_string(),
+        "gzip" => "data.sqlite.gz".to_string(),
+        _ => "data.sqlite".to_string(),
+    }
+}
+
+/// A semantic version as a comparable integer: `0.1.0` becomes `1000`.
+///
+/// Used only for `minReaderVersion`. Comparing version components numerically matters here for
+/// the same reason it does in `registry.rs`: a lexicographic comparison puts `0.10.0` below
+/// `0.9.0`, which would let a CLI claim it can read a package it cannot.
+fn normalize_version_number(version: &str) -> u64 {
+    let core = version.split(['-', '+']).next().unwrap_or(version);
+    let mut parts = core.split('.').map(|p| p.parse::<u64>().unwrap_or(0));
+    let major = parts.next().unwrap_or(0);
+    let minor = parts.next().unwrap_or(0);
+    let patch = parts.next().unwrap_or(0);
+    major * 1_000_000 + minor * 1_000 + patch
+}
+
+fn record_resolution(
+    manifest: &mut package::ProjectManifest,
+    country: &str,
+    version: &str,
+    level: Option<&str>,
+) {
+    manifest
+        .packages
+        .entry(country.to_string())
+        .or_insert_with(|| format!("^{version}"));
+    // `manifest.level` is the project's *default* for future installs and is deliberately not
+    // updated here. Georgia's package is demoted to "cities" because GeoNames publishes no
+    // postal file for it, and writing that into the project default left a project that also
+    // installed TR reporting a level no package has. The per-package level is in `resolution`.
+    let _ = level;
+    let resolution = manifest
+        .resolution
+        .get_or_insert_with(Default::default);
+    resolution.insert(
+        country.to_string(),
+        package::ResolvedPackage {
+            version: version.to_string(),
+            level: level.map(str::to_string),
+            integrity: Some("verified".to_string()),
+        },
+    );
+}
+
+/// Refuse a package this build cannot read, before spending bandwidth on it.
+fn check_compatibility(manifest: &serde_json::Value) -> Result<(), Exit> {
+    const SUPPORTED_SCHEMA: u64 = 1;
+
+    let schema = manifest
+        .get("schemaVersion")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(SUPPORTED_SCHEMA);
+    if schema > SUPPORTED_SCHEMA {
+        eprintln!(
+            "terrakit: this package uses schema version {schema}, and this CLI supports \
+             {SUPPORTED_SCHEMA}."
+        );
+        eprintln!(
+            "       Upgrade with 'cargo install terrakit-cli' or your package manager. \
+             Installing it anyway would produce a database this build cannot read correctly."
+        );
+        return Err(Exit::Verification);
+    }
+
+    let min_reader = manifest
+        .get("minReaderVersion")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(1);
+    let this_version = normalize_version_number(CLI_VERSION);
+    if min_reader > this_version {
+        eprintln!(
+            "terrakit: this package requires reader version {min_reader}, and this CLI is \
+             {CLI_VERSION}."
+        );
+        return Err(Exit::Verification);
+    }
+    Ok(())
+}
+
 // --- helpers ---------------------------------------------------------------
 
 fn format_thousands(value: i64) -> String {
@@ -649,6 +1295,27 @@ mod tests {
         assert_eq!(truncate("İstanbul", 4), "İst…");
         assert_eq!(truncate("İstanbul", 8), "İstanbul");
         assert_eq!(truncate("東京都", 2), "東…");
+    }
+
+    #[test]
+    fn reader_versions_compare_numerically_not_as_text() {
+        // Lexicographic ordering puts "0.10.0" below "0.9.0", so a CLI on 0.9 would claim it
+        // can read a package requiring 0.10 and fail at the first query instead of at install.
+        assert!(normalize_version_number("0.10.0") > normalize_version_number("0.9.0"));
+        assert!(normalize_version_number("1.0.0") > normalize_version_number("0.99.99"));
+        assert_eq!(normalize_version_number("0.1.0"), 1_000);
+        // Build metadata and pre-release suffixes are not part of the ordering.
+        assert_eq!(normalize_version_number("1.2.3+a6c3"), 1_002_003);
+        assert_eq!(normalize_version_number("1.2.3-rc1"), 1_002_003);
+    }
+
+    #[test]
+    fn artifact_names_match_the_pipeline() {
+        assert_eq!(artifact_name("zstd"), "data.sqlite.zst");
+        assert_eq!(artifact_name("gzip"), "data.sqlite.gz");
+        // An unknown or absent method means the uncompressed artifact, which is what the
+        // manifest's null compression means.
+        assert_eq!(artifact_name(""), "data.sqlite");
     }
 
     #[test]

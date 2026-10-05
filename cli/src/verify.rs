@@ -16,6 +16,33 @@ use std::path::Path;
 
 use sha2::{Digest, Sha256};
 
+/// Decode lowercase or uppercase hex into bytes.
+///
+/// Lives here rather than in `signature.rs` because both need it: package digests and signature
+/// values are the same representation, and two implementations of it is one more place for a
+/// case-folding bug to hide.
+pub fn hex_to_bytes(input: &str) -> Result<Vec<u8>, String> {
+    let trimmed = input.trim();
+    if trimmed.len() % 2 != 0 {
+        return Err(format!(
+            "hex string has an odd length ({}): {trimmed:?}",
+            trimmed.len()
+        ));
+    }
+    let bytes = trimmed.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len() / 2);
+    for pair in bytes.chunks_exact(2) {
+        let hi = (pair[0] as char)
+            .to_digit(16)
+            .ok_or_else(|| format!("not a hex digit: {:?}", pair[0] as char))?;
+        let lo = (pair[1] as char)
+            .to_digit(16)
+            .ok_or_else(|| format!("not a hex digit: {:?}", pair[1] as char))?;
+        out.push((hi * 16 + lo) as u8);
+    }
+    Ok(out)
+}
+
 /// Result of checking one file against the manifest.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileStatus {
@@ -167,6 +194,16 @@ impl Verification {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hex_decoding_accepts_both_cases_and_rejects_junk() {
+        assert_eq!(hex_to_bytes("00ff10").unwrap(), vec![0x00, 0xff, 0x10]);
+        assert_eq!(hex_to_bytes("00FF10").unwrap(), vec![0x00, 0xff, 0x10]);
+        assert_eq!(hex_to_bytes("").unwrap(), Vec::<u8>::new());
+        assert!(hex_to_bytes("abc").is_err(), "odd length");
+        assert!(hex_to_bytes("zz").is_err(), "not hex digits");
+        assert!(hex_to_bytes("00 11").is_err(), "internal space");
+    }
 
     #[test]
     fn sha256_matches_the_published_vector() {

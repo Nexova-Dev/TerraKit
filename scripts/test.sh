@@ -51,6 +51,21 @@ run_suite "internal documentation links" \
 if command -v cargo > /dev/null 2>&1; then
   run_suite "Rust CLI (unit + normalization conformance)" \
     cargo test --manifest-path cli/Cargo.toml --quiet
+
+  # Registry and `terrakit add`. Needs a release binary and the GeoNames source cache, so it
+  # runs only when both are present and says so rather than skipping silently.
+  RELEASE_BIN=cli/target/release/terrakit
+  if [[ -x "$RELEASE_BIN" ]] && [[ -n "${TERRAKIT_CACHE:-}" ]] && \
+     [[ -d "${TERRAKIT_CACHE}" ]]; then
+    cargo build --manifest-path cli/Cargo.toml --release --quiet
+    run_suite "registry install and refusals" \
+      bash scripts/test_registry.sh
+  else
+    printf '\n\033[1m=== registry install and refusals\033[0m\n'
+    printf '  SKIPPED: need a release binary and TERRAKIT_CACHE\n'
+    printf '  cargo build --manifest-path cli/Cargo.toml --release\n'
+    printf '  TERRAKIT_CACHE=... bash scripts/test_registry.sh\n'
+  fi
 else
   printf '\n\033[1m=== Rust CLI\033[0m\n  SKIPPED: cargo not found\n'
 fi

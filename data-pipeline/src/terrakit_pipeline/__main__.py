@@ -75,13 +75,134 @@ def main(argv: list[str] | None = None) -> int:
     validate_cmd.add_argument("path", type=Path, help="package directory")
     validate_cmd.add_argument("--json", action="store_true")
 
+    publish_cmd = sub.add_parser(
+        "publish",
+        help="compress and sign a built package, turning it into a release",
+    )
+    publish_cmd.add_argument("path", type=Path, help="built package directory")
+    publish_cmd.add_argument(
+        "--sign-key",
+        type=Path,
+        default=None,
+        help="Ed25519 private key in PEM form. Omit for an unsigned build, which "
+             "tools/build_registry.py --production will refuse.",
+    )
+    publish_cmd.add_argument(
+        "--sign-key-id",
+        default=None,
+        help="key id recorded in signature.json, e.g. terrakit-dev-2026. "
+             "Required whenever --sign-key is given.",
+    )
+    publish_cmd.add_argument(
+        "--no-compress",
+        action="store_true",
+        help="skip zstd compression; the package stays larger but needs no "
+             "zstd on either side",
+    )
+    publish_cmd.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="verify an already-published directory without modifying it",
+    )
+
     args = parser.parse_args(argv)
 
     if args.command == "build":
         return cmd_build(args)
     if args.command == "validate":
         return cmd_validate(args)
+    if args.command == "publish":
+        return cmd_publish(args)
     return 1
+
+
+def cmd_publish(args) -> int:
+    """
+    Turn a build into a publishable release.
+
+    Separate from `build` because the two answer different questions. `build` asks "is this data
+    correct?" and runs on every commit, reproducibly, with no key material anywhere near it.
+    `publish` asks "may this be served to users?" and involves a private key, a compression step
+    and a decision. Collapsing them would put a signing key on every contributor's laptop and
+    make the reproducible-build claim depend on a nonce.
+
+    The order matters and is enforced below: compress, rewrite the manifest with the compressed
+    digest, THEN sign. Signing first would leave a signature over a manifest that no longer
+    describes the files on disk — which verifies against nobody and is a confusing failure to
+    debug.
+    """
+    from terrakit_pipeline import release
+
+    package_dir: Path = args.path
+    if not package_dir.is_dir():
+        print(f"error: {package_dir} is not a directory", file=sys.stderr)
+        return 2
+
+    if args.dry_run:
+        ok, problems = release.verify_release(package_dir)
+        if ok:
+            print(f"{package_dir}: verified")
+            return 0
+        print(f"{package_dir}: FAILED", file=sys.stderr)
+        for problem in problems:
+            print(f"  - {problem}", file=sys.stderr)
+        return 3
+
+    if args.sign_key is not None and args.sign_key_id is None:
+        print(
+            "error: --sign-key requires --sign-key-id. A signature with no key id "
+            "cannot be matched against a keyring, which would make it unverifiable "
+            "for anyone but its author.",
+            file=sys.stderr,
+        )
+        return 2
+    if args.sign_key is None and args.sign_key_id is not None:
+        print(
+            "error: --sign-key-id given without --sign-key; nothing is being signed.",
+            file=sys.stderr,
+        )
+        return 2
+
+    if not args.no_compress and not release.zstd_available():
+        print(
+            "error: no zstd implementation found. Install the `zstd` binary or the "
+            "`zstandard` Python module, or pass --no-compress.",
+            file=sys.stderr,
+        )
+        return 2
+
+    print(f"[publish] {package_dir.name}")
+    try:
+        summary = release.finalize_release(
+            package_dir,
+            compress=not args.no_compress,
+            sign_key=args.sign_key,
+            key_id=args.sign_key_id,
+        )
+    except (FileNotFoundError, ValueError, RuntimeError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    # Verify what was just written, with the same checks the installer runs. A publish step
+    # that does not verify its own output is a publish step that ships broken packages.
+    ok, problems = release.verify_release(package_dir)
+    if not ok:
+        print(f"{package_dir.name}: FAILED verification", file=sys.stderr)
+        for problem in problems:
+            print(f"  - {problem}", file=sys.stderr)
+        return 3
+
+    manifest = summary["manifest"]
+    raw = manifest["size"]["raw"]
+    compressed = manifest["size"]["compressed"]
+    ratio = f"{raw / compressed:.1f}x" if compressed else "n/a"
+    print(
+        f"  {raw:,} bytes raw"
+        + (f", {compressed:,} compressed ({ratio})" if compressed else "")
+    )
+    print(f"  signed: {summary['signed']}" + (f" (keyId={summary['key_id']})" if summary["signed"] else ""))
+    print(f"  verified: yes")
+    return 0
 
 
 def cmd_build(args) -> int:

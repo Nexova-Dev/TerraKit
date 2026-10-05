@@ -169,6 +169,45 @@ jobs:
           "$REPO/cli/target/release/terrakit" search Tbilisi
           "$REPO/cli/target/release/terrakit" doctor
 
+  registry:
+    name: registry and install
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: cli
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install zstd
+        run: sudo apt-get update && sudo apt-get install -y zstd
+
+      # Publishes real packages to a static registry and installs them with the binary, then
+      # attacks the result. The refusals are the substance: verification is demonstrated by
+      # rejecting tampered, unsigned, forged and wrongly-signed packages with exit 3, not by
+      # installing a good one.
+      - name: Build the release binary
+        run: cargo build --manifest-path cli/Cargo.toml --release
+
+      - name: Cache the GeoNames sources
+        uses: actions/cache@v4
+        with:
+          path: .cache/terrakit
+          key: geonames-${{ hashFiles('data-pipeline/sources/SOURCES.lock') }}
+          restore-keys: geonames-
+
+      - name: Registry install and refusals
+        env:
+          TERRAKIT_CACHE: ${{ github.workspace }}/.cache/terrakit
+          PKGS: TR GE
+        run: bash scripts/test_registry.sh
+
+
   future:
     name: Swift SDK
     runs-on: macos-latest

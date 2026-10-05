@@ -6,8 +6,12 @@
 //! `search()` the CLI does rather than shelling out to it and parsing stdout.
 
 pub mod commands;
+pub mod download;
 pub mod exit;
+pub mod install;
 pub mod normalize;
 pub mod package;
 pub mod query;
+pub mod registry;
+pub mod signature;
 pub mod verify;

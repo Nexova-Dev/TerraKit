@@ -84,6 +84,10 @@ struct Flags {
     check_only: bool,
     force: bool,
     cache_dir: Option<PathBuf>,
+    /// The package version requested by `--version`, as opposed to the CLI's own version.
+    package_version: Option<String>,
+    registry: Option<String>,
+    offline: bool,
 }
 
 impl Default for Flags {
@@ -100,6 +104,9 @@ impl Default for Flags {
             check_only: false,
             force: false,
             cache_dir: None,
+            package_version: None,
+            registry: None,
+            offline: false,
         }
     }
 }
@@ -110,8 +117,18 @@ fn run(args: &[String]) -> Outcome {
         return Ok(());
     }
 
-    let command = args[0].clone();
-    let rest = &args[1..];
+    // A leading `--flag` means no command was given: `terrakit --version` and
+    // `terrakit --json` are queries about the tool, not invocations of something. Taking
+    // `--version` as a command name would report "unknown command" for a flag that is in the
+    // usage text.
+    let has_command = !args[0].starts_with('-');
+    let command = if has_command { args[0].clone() } else { String::new() };
+    let rest = if has_command { &args[1..] } else { &args[..] };
+
+    // `--json` is read in a pre-pass because `--version` can be answered mid-parse, and
+    // `terrakit --version --json` must produce JSON regardless of which flag came first.
+    // Reading it only in the main loop would make the output depend on argument order.
+    let wants_json = args.iter().any(|a| a == "--json");
 
     // Flags are separated from positionals in one pass so `--json` works before
     // or after the positional arguments, which is what people actually type.
@@ -134,10 +151,20 @@ fn run(args: &[String]) -> Outcome {
 
         match arg.as_str() {
             "--json" => flags.json = true,
-            "--quiet" | "--no-color" | "--offline" => {}
+            "--quiet" | "--no-color" => {}
+            "--offline" => flags.offline = true,
             "--verbose" | "--check" => flags.check_only = true,
             "--strict" => flags.strict = true,
             "--force" => flags.force = true,
+            "--registry" => flags.registry = Some(take_value("--registry")?),
+            // Level shorthands, per CLI_SPEC.md's `terrakit add TR --postal`. Spelled as
+            // flags because that is what the examples show and what people type; they are
+            // the same setting as --level, not a separate code path.
+            "--basic" => flags.level = Some("basic".into()),
+            "--administrative" => flags.level = Some("administrative".into()),
+            "--cities" => flags.level = Some("cities".into()),
+            "--postal" => flags.level = Some("postal".into()),
+            "--full" => flags.level = Some("full".into()),
             "--country" | "-c" => flags.country = Some(take_value("--country")?),
             "--city" => flags.city = Some(take_value("--city")?),
             "--type" => {
@@ -162,11 +189,17 @@ fn run(args: &[String]) -> Outcome {
             "--level" | "-l" => flags.level = Some(take_value("--level")?),
             "--platform" => flags.platform = Some(take_value("--platform")?),
             "--cache-dir" => flags.cache_dir = Some(PathBuf::from(take_value("--cache-dir")?)),
-            // `--version` is answered during the flag pass, before the shared
-            // output format is computed, so it derives its own.
+            // `--version` is overloaded, and the overload is the documented one:
+            // `terrakit add TR --version 2026.10.1` asks for a package version, while
+            // `terrakit --version` reports the CLI's own. Disambiguated by whether a
+            // command was given, which is available here because the command is parsed
+            // before the flags.
             "--version" | "-V" => {
-                let early = if flags.json { Format::Json } else { Format::Human };
-                return commands::version(early);
+                if command.is_empty() {
+                    let early = if wants_json { Format::Json } else { Format::Human };
+                    return commands::version(early);
+                }
+                flags.package_version = Some(take_value("--version")?);
             }
             other if other.starts_with("--") => {
                 return usage_error(format!("unknown flag {other}"));
@@ -256,6 +289,32 @@ fn run(args: &[String]) -> Outcome {
         // Exit::Failure rather than a new code: CLI_SPEC.md §1 fixes the code
         // table, and adding an undeclared one would break the contract a script
         // depends on. `1` correctly means "did not do what you asked".
+        "add" => {
+            let project = package::require_project(&cwd)?;
+            let context = commands::Context::load(
+                flags.registry.as_deref(),
+                flags.cache_dir.as_deref(),
+                flags.offline,
+            )
+            .map_err(|e| {
+                eprintln!("terrakit: {e}");
+                Exit::Usage
+            })?;
+            let options = commands::AddOptions {
+                version: flags.package_version.clone(),
+                level: flags.level.clone(),
+                force: flags.force,
+            };
+            commands::add(&project, &positionals, &context, options, out_format)
+        }
+
+        // Specified in CLI_SPEC.md but not built: they need the registry, which is not hosted
+        // yet. Reported as "not implemented" rather than "unknown command", because the
+        // difference matters — the first says the design is settled and the work is pending,
+        // the second says the user made a typo.
+        //
+        // Exit::Failure rather than a new code: CLI_SPEC.md section 1 fixes the code table,
+        // and adding an undeclared one would break the contract a script depends on.
         other if COMMANDS_NOT_YET_BUILT.contains(&other) => {
             eprintln!("terrakit: '{other}' is specified in CLI_SPEC.md but not implemented yet.");
             eprintln!("       It needs the package registry, which is not hosted yet.");
@@ -263,14 +322,14 @@ fn run(args: &[String]) -> Outcome {
             Err(Exit::Failure)
         }
 
+        "" => usage_error("no command given. Run 'terrakit --help' for the command list."),
         other => usage_error(format!(
             "unknown command {other:?}. Run 'terrakit --help' for the command list."
         )),
     }
 }
 
-const COMMANDS_NOT_YET_BUILT: &[&str] =
-    &["add", "remove", "update", "install", "cache", "bundle"];
+const COMMANDS_NOT_YET_BUILT: &[&str] = &["remove", "update", "install", "cache", "bundle"];
 
 fn commands_validate(
     project: &package::Project,
