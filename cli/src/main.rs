@@ -46,6 +46,7 @@ GLOBAL FLAGS
     --cache-dir <path>      Override the shared cache location
     --platform <name>       bundle: ios, android or all
     --out <dir>             bundle: destination for the resource manifest tree
+    --allow-unsigned        install: accept an unsigned GitHub package (refused in CI)
     --offline               Fail rather than reach the network
     --help                  Show this message
 
@@ -97,6 +98,8 @@ struct Flags {
     bundle_dir: Option<PathBuf>,
     /// `cache clean --all`: remove everything, not only prunable entries.
     clean_all: bool,
+    /// `install --allow-unsigned`: accept an unsigned GitHub package. Refused in CI.
+    allow_unsigned: bool,
 }
 
 impl Default for Flags {
@@ -120,6 +123,7 @@ impl Default for Flags {
             keep_cache: false,
             bundle_dir: None,
             clean_all: false,
+            allow_unsigned: false,
         }
     }
 }
@@ -176,6 +180,8 @@ fn run(args: &[String]) -> Outcome {
             // `cache clean --all` is documented (CLI_SPEC.md 2.10). Distinct from --force, which
             // means "replace an installed package".
             "--all" => flags.clean_all = true,
+            // Local development only. Refuses to run in CI; see github::permit_unsigned.
+            "--allow-unsigned" => flags.allow_unsigned = true,
             "--keep-cache" => flags.keep_cache = true,
             "--strict" => flags.strict = true,
             "--force" => flags.force = true,
@@ -308,17 +314,9 @@ fn run(args: &[String]) -> Outcome {
             commands_validate(&project, positionals.first().map(|s| s.as_str()), flags.strict, out_format)
         }
 
-        // Specified in CLI_SPEC.md but not built yet. Reported as "not
-        // implemented" rather than "unknown command", because the difference
-        // matters: the first says the design is settled and the work is pending,
-        // the second says the user made a typo.
-        //
-        // Exit::Failure rather than a new code: CLI_SPEC.md §1 fixes the code
-        // table, and adding an undeclared one would break the contract a script
-        // depends on. `1` correctly means "did not do what you asked".
         // Shared by `add` and `update`: both resolve settings the same way, and a difference
         // would mean `update` read a different registry than the `add` that installed the
-        // package.
+        // package in the first place.
         "add" | "update" => {
             let project = package::require_project(&cwd)?;
             let context = commands::Context::load(
@@ -427,18 +425,33 @@ fn run(args: &[String]) -> Outcome {
             commands::bundle(&project, &plan, out_format)
         }
 
-        // Specified in CLI_SPEC.md but not built: it needs GitHub tarball access, which is a
-        // separate transport with its own trust story. Reported as "not implemented" rather than
-        // "unknown command", because the difference matters — the first says the design is
-        // settled and the work is pending, the second says the user made a typo.
-        //
-        // Exit::Failure rather than a new code: CLI_SPEC.md section 1 fixes the code table,
-        // and adding an undeclared one would break the contract a script depends on.
-        other if COMMANDS_NOT_YET_BUILT.contains(&other) => {
-            eprintln!("terrakit: '{other}' is specified in CLI_SPEC.md but not implemented yet.");
-            eprintln!("       It needs the package registry, which is not hosted yet.");
-            eprintln!("       See CONTRIBUTING.md section 3 for the build order.");
-            Err(Exit::Failure)
+        "install" => {
+            let project = package::require_project(&cwd)?;
+            // Same Context as `add`, so a GitHub install and a registry install read the same
+            // keyring and the same cache. Two resolutions would mean one command trusts a key the
+            // other rejects.
+            let context = commands::Context::load(
+                flags.registry.as_deref(),
+                flags.cache_dir.as_deref(),
+                flags.offline,
+            )
+            .map_err(|e| {
+                eprintln!("terrakit: {e}");
+                Exit::Usage
+            })?;
+            let Some(source) = positionals.first() else {
+                return usage_error(
+                    "install needs a source, for example\n\
+                     \x20     terrakit install github.com/example/terrakit-data-tr@1.2.0",
+                );
+            };
+            commands::install_from_github(
+                &project,
+                source,
+                &context,
+                flags.allow_unsigned,
+                out_format,
+            )
         }
 
         "" => usage_error("no command given. Run 'terrakit --help' for the command list."),
@@ -448,7 +461,6 @@ fn run(args: &[String]) -> Outcome {
     }
 }
 
-const COMMANDS_NOT_YET_BUILT: &[&str] = &["install"];
 
 fn commands_validate(
     project: &package::Project,

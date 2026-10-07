@@ -172,10 +172,10 @@ tools/build_registry.py datasets/ --out registry/ \
 ```
 
 `--production` refuses anything signed with the committed development key. That guarantee is
-tested, not just documented: [`scripts/test_registry.sh`](scripts/test_registry.sh) is 75 checks
-covering install, update, remove, cache listing, verification and pruning, mobile bundling,
-damage detection and repair, idempotency, relocatability, reproducibility, the four refusals, and
-the `--json` contract.
+tested, not just documented: [`scripts/test_registry.sh`](scripts/test_registry.sh) is 90 checks
+covering registry install, update, remove, cache listing, verification and pruning, mobile bundling,
+GitHub install, hostile archives, unsigned packages, damage detection and repair, idempotency,
+relocatability, reproducibility, the refusals, and the `--json` contract.
 
 ### Removing and updating
 
@@ -241,9 +241,25 @@ bundle/
     └── terrakuit.gradle          noCompress snippet, included by the app
 ```
 
-`install` from a GitHub source is specified in [`CLI_SPEC.md`](CLI_SPEC.md) but not built: it needs
-tarball access, which is a separate transport with its own trust story. It says so rather than
-pretending the command does not exist.
+### Installing from a GitHub source
+
+```console
+$ terrakit install github.com/example/terrakit-data-tr@main
+  resolving example-terrakit-data-tr
+    main -> 4f2a1c8e9b3d5a7f0c1e2d3b4a5f6e7d8c9b0a1b
+    note: main is not a versioned ref. Installing what it points at right now;
+          the resolved commit is pinned in terrakit.json so this stays reproducible.
+    signature verified (keyId=terrakit-release-2026)
+    file digests match the manifest
+  installed  TR 2026.10.1+9920 (postal, 9.9 MB, signed by terrakit-release-2026)
+```
+
+A GitHub repository is an untrusted transport, not a trusted publisher: anyone who can push to a
+branch can push data, so signature verification applies exactly as it does for a registry package.
+Tarball entries are treated as hostile — `..`, absolute paths, symlinks, hardlinks, entries under
+two roots, and decompression bombs are all refused, and each exits `3` rather than `1` so a CI
+script does not mistake an attack for a flaky network. `--allow-unsigned` exists for local
+development and refuses to run in CI.
 
 Read the specification documents before contributing. They are the source of truth, and code that
 disagrees with them is a bug.

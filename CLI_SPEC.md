@@ -363,6 +363,24 @@ invocation, and refuses to run in CI.
 Branch and commit references resolve to a concrete SHA, printed and pinned in the
 lockfile.
 
+Implementation notes:
+
+- **The ref resolves before the download, and the download uses the SHA.** A branch that moves
+  between the API call and the fetch cannot change the bytes, and `terrakit.json` records
+  `resolvedRef` so a later run gets the same package even though `main` may have moved.
+- **A non-reproducible ref warns; it does not refuse.** Refusing `@main` would make the documented
+  workflow impossible, and the pinned SHA is what actually provides reproducibility.
+- **A hostile archive exits `3`.** `CLI_SPEC.md` §1 words that code as "checksum, signature, or
+  schema mismatch", but the principle is "this package must not be trusted", and a tarball that
+  tries to write outside the extraction directory is exactly that. At `1` it would look like a
+  transient error: a CI script keying on `3` would not stop the build, and a retry would fetch the
+  same archive.
+- **A signed manifest beside a different database is refused.** The signature proves the manifest;
+  it says nothing about the directory it sits in, so every file is checked against the manifest's
+  own digests after extraction.
+- **`TERRAKIT_GITHUB_API` and `TERRAKIT_GITHUB_CODELOAD`** override the hosts for GitHub
+  Enterprise, air-gapped mirrors, and testing without a network.
+
 ### 2.12 `bundle`
 
 ```bash

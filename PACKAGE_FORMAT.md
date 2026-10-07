@@ -426,6 +426,28 @@ prominent warning on every use, and refuses to run when CI is detected. If anyon
 branch, anyone can push data, and the only thing standing between that and a production app is
 signature verification.
 
+**Archive entries are hostile input.** A GitHub tarball is built by whoever pushed the commit, so
+extraction enforces four rules per entry rather than trusting the archive's shape:
+
+| Rule | Why |
+|---|---|
+| the path must be relative and free of `..` | `../` writes outside the destination |
+| the path must resolve inside the destination, checked after normalisation | a component that normalises away is enough |
+| the entry must be a regular file or a directory | a link is an escape, never a shortcut, and a package is three files |
+| every entry must share one top-level directory | GitHub prefixes `<repo>-<sha>/`; two roots means the archive is not what it claims |
+
+Entry count and total extracted bytes are capped, because a 40 KB archive that expands without
+bound is a decompression bomb and the disk-space check `add` performs runs before the download,
+not after the expansion.
+
+**The country comes from the signed manifest, not the repository name.** A repository name is a
+convention a third party controls; the manifest is signed. Trusting the name would let a renamed
+repository land a dataset in another country's slot.
+
+**Hosts are overridable.** `TERRAKIT_GITHUB_API` and `TERRAKIT_GITHUB_CODELOAD` exist for GitHub
+Enterprise and for air-gapped mirrors — and are what lets the whole path be tested without a
+network.
+
 Integrity also covers the clone itself: the CLI verifies the commit SHA it resolved against the one
 it actually checked out, and verifies the extracted package's SHA-256 against its own manifest. A
 manifest cannot claim a checksum the files do not have.

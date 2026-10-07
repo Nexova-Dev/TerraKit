@@ -67,8 +67,8 @@ Follow it. Work out of sequence creates work for everyone else.
 4. registry/             static index + object storage                       done
 5. cli/                  add, remove, update                                 done
 6. cli/                  cache, bundle                                       done
-7. cli/                  install from a GitHub source                        next
-8. sdk/swift/            query engine over the produced package
+7. cli/                  install from a GitHub source                        done
+8. sdk/swift/            query engine over the produced package               next
 9. sdk/kotlin/           same surface, conformance-tested against Swift
 10. Remaining countries  US, GB — plus JP in the test set
 11. search depth         autocomplete ranking, boundary polygons
@@ -77,7 +77,8 @@ Follow it. Work out of sequence creates work for everyone else.
 The registry came before the remaining CLI commands because they cannot be built or tested without
 it: `remove` and `update` are both built on the resolution `add` records.
 
-`add`, `remove`, `update`, `cache` and `bundle` are complete.
+Every command in [`CLI_SPEC.md`](CLI_SPEC.md) §2 is complete: `add`, `remove`, `update`,
+`install`, `cache` and `bundle`, plus the read-only query set.
 [`scripts/test_registry.sh`](scripts/test_registry.sh) builds real packages, publishes them,
 installs, updates and removes them, and then attacks the result: a flipped byte, a missing
 signature, a manifest edited after signing, and a package signed by an untrusted key must each be

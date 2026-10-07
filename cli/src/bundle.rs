@@ -446,6 +446,8 @@ mod tests {
                 country.to_string(),
                 crate::package::ResolvedPackage {
                     version: version.to_string(),
+                    source: Some("registry".to_string()),
+                    resolved_ref: None,
                     level: Some("cities".to_string()),
                     integrity: Some("verified".to_string()),
                 },

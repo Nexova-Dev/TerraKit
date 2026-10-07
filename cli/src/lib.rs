@@ -10,6 +10,7 @@ pub mod cache;
 pub mod commands;
 pub mod download;
 pub mod exit;
+pub mod github;
 pub mod install;
 pub mod normalize;
 pub mod package;

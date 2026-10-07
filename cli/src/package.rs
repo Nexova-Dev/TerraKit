@@ -37,6 +37,19 @@ pub struct ProjectManifest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResolvedPackage {
     pub version: String,
+    /// Where it came from: `registry` or a GitHub source.
+    ///
+    /// Recorded because a GitHub install is pinned to a commit, not a version, and a later
+    /// `update` must not treat it as a registry package it can move freely.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// The resolved commit SHA for a GitHub source.
+    ///
+    /// This is what makes `@main` reproducible after the fact: the branch may move, the lockfile
+    /// does not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_ref: Option<String>,
+    /// Dataset level, from the package manifest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub level: Option<String>,
     /// `verified` when the installed files match the recorded checksums.

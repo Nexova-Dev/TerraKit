@@ -35,6 +35,8 @@ unicode-normalization = "0.1.25"
 ureq = { version = "3.4.2", features = ["rustls"] }
 zstd = "0.14.0"
 libc = "0.2.190"
+tar = "0.4.46"
+flate2 = "1.1.10"
 
 [dev-dependencies]
 # The conformance fixture is the same file the Python oracle and both SDKs use.

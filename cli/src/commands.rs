@@ -1379,6 +1379,8 @@ fn record_resolution(
         country.to_string(),
         package::ResolvedPackage {
             version: version.to_string(),
+            source: Some("registry".to_string()),
+            resolved_ref: None,
             level: level.map(str::to_string),
             integrity: Some("verified".to_string()),
         },
@@ -2005,6 +2007,328 @@ fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
     registry::Version::parse(a)
         .cmp(&registry::Version::parse(b))
         .then_with(|| a.cmp(b))
+}
+
+// --- install ----------------------------------------------------------------
+
+/// `terrakit install <github.com/owner/repo[@ref]>`
+///
+/// The order is the security contract, and it matches `add`:
+///
+/// 1. parse the source, refusing anything that is not a GitHub repository path
+/// 2. resolve the ref to a concrete commit SHA **before** downloading
+/// 3. download the tarball for that SHA, so a branch that moves mid-install cannot change the bytes
+/// 4. extract with every hostile-entry rule applied ([`crate::github`])
+/// 5. verify the signature over the extracted manifest's bytes
+/// 6. verify each file against the manifest's own digests
+/// 7. `rename` into place
+/// 8. pin the resolved commit in `terrakit.json`
+///
+/// Steps 5 and 6 are the same checks a registry package gets. A GitHub repository is an untrusted
+/// transport, not a trusted publisher: anyone who can push to a branch can push data, and signature
+/// verification is the only thing between that and a production app.
+pub fn install_from_github(
+    project: &Project,
+    source: &str,
+    context: &Context,
+    allow_unsigned: bool,
+    out_format: Format,
+) -> Outcome {
+    let spec = match crate::github::parse(source) {
+        Ok(spec) => spec,
+        Err(reason) => {
+            eprintln!("terrakit: {reason}");
+            return Err(Exit::Usage);
+        }
+    };
+
+    progress(&format!("resolving {}", spec.slug()));
+    let resolved = match crate::github::resolve(&spec, context.offline) {
+        Ok(resolved) => resolved,
+        Err(reason) => {
+            eprintln!("terrakit: {reason}");
+            return Err(Exit::NotFound);
+        }
+    };
+    progress(&format!("  {}", resolved.describe()));
+
+    if !resolved.kind.reproducible() {
+        // A warning, not a refusal: `@main` is documented and refused-by-refusal would make the
+        // documented workflow impossible. The commit SHA is pinned either way, which is what
+        // makes the install reproducible from the lockfile even though the ref is not.
+        progress(&format!(
+            "  note: {} is not a versioned ref. Installing what it points at right now;\n\
+             \x20        the resolved commit is pinned in terrakit.json so this stays reproducible.",
+            spec.reference
+        ));
+    }
+
+    let tarball_url = spec.tarball_url(&resolved.commit);
+    let cache_dir = context.cache_dir.join("github");
+    let cached = cache_dir.join(format!("{}.tar.gz", resolved.commit));
+
+    // A cached tarball is keyed by commit SHA, which is exactly what makes reuse safe: two
+    // different branches resolving to the same commit are the same bytes.
+    let mut archive_bytes: Vec<u8> = Vec::new();
+    if cached.is_file() {
+        match std::fs::read(&cached) {
+            Ok(bytes) => {
+                progress(&format!("  cached   {}", download::human_bytes(bytes.len() as u64)));
+                archive_bytes = bytes;
+            }
+            Err(_) => progress("  cache entry unreadable; re-downloading"),
+        }
+    }
+
+    if archive_bytes.is_empty() {
+        progress(&format!("  downloading {}", tarball_url));
+        let outcome = match download::download(&tarball_url, &cached, None, context.offline, &mut |_, _| {})
+        {
+            Ok(outcome) => outcome,
+            Err(e) => {
+                eprintln!("terrakit: {e}");
+                return Err(crate::github::exit_for(&e));
+            }
+        };
+        archive_bytes = match std::fs::read(&cached) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                eprintln!("terrakit: cannot read the downloaded tarball: {e}");
+                return Err(Exit::Failure);
+            }
+        };
+        progress(&format!("  downloaded {}", outcome.summary()));
+    }
+
+    // Stage inside the destination's filesystem, so the commit is a rename.
+    let staging_root = project.packages_dir.join(".terrakit-staging");
+    let staging = staging_root.join(format!("github-{}", &resolved.commit[..12]));
+    let _ = std::fs::remove_dir_all(&staging);
+
+    let extracted = match crate::github::extract(&archive_bytes, &staging) {
+        Ok(extracted) => extracted,
+        Err(reason) => {
+            let _ = std::fs::remove_dir_all(&staging);
+            eprintln!("terrakit: {reason}");
+            return Err(crate::github::exit_for(&reason));
+        }
+    };
+    progress(&format!(
+        "  extracted {} file(s), {}",
+        extracted.files.len(),
+        download::human_bytes(extracted.total_bytes)
+    ));
+
+    // --- signature ------------------------------------------------------------
+    let manifest_bytes = match std::fs::read(staging.join("manifest.json")) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            let _ = std::fs::remove_dir_all(&staging);
+            eprintln!("terrakit: the repository has no manifest.json at its root.");
+            eprintln!("       A TerraKit package is data.sqlite, manifest.json and signature.json.");
+            return Err(Exit::Verification);
+        }
+    };
+    let signature_text = std::fs::read_to_string(staging.join("signature.json")).unwrap_or_default();
+    let signed = !signature_text.trim().is_empty();
+
+    if let Err(reason) = crate::github::permit_unsigned(allow_unsigned, signed) {
+        let _ = std::fs::remove_dir_all(&staging);
+        eprintln!("terrakit: {reason}");
+        return Err(Exit::Verification);
+    }
+
+    let mut key_id = "unsigned".to_string();
+    if signed {
+        match crate::signature::verify(&signature_text, &manifest_bytes, &context.keyring()) {
+            Ok(id) => {
+                key_id = id.clone();
+                progress(&format!("  signature verified (keyId={id})"));
+            }
+            Err(failure) => {
+                let _ = std::fs::remove_dir_all(&staging);
+                eprintln!("terrakit: package verification failed.");
+                eprintln!("       {failure}");
+                return Err(Exit::Verification);
+            }
+        }
+    } else {
+        // Loud, and every time. A developer opt-in that is quiet becomes a habit that survives
+        // into an environment where it is not.
+        eprintln!(
+            "terrakit: WARNING: installing an UNSIGNED package from github.com/{}/{}.\n\
+             \x20      Anyone who can push to that branch can change what your app ships.\n\
+             \x20      Do not do this outside local development.",
+            spec.owner,
+            spec.repo
+        );
+    }
+
+    // --- manifest digests ------------------------------------------------------
+    let manifest_value: serde_json::Value = match serde_json::from_slice(&manifest_bytes) {
+        Ok(value) => value,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&staging);
+            eprintln!("terrakit: the manifest is not valid JSON: {e}");
+            return Err(Exit::Verification);
+        }
+    };
+
+    let country = manifest_value
+        .get("country")
+        .and_then(|v| v.as_str())
+        .and_then(|c| crate::registry::country_code(c).ok())
+        .unwrap_or_default();
+    if country.is_empty() {
+        let _ = std::fs::remove_dir_all(&staging);
+        eprintln!(
+            "terrakit: the manifest declares no usable ISO 3166-1 alpha-2 `country`.\n\
+             \x20      The country comes from the signed manifest, not from the repository name:\n\
+             \x20      a rename must not move a package into another country's slot."
+        );
+        return Err(Exit::Verification);
+    }
+
+    let version = manifest_value
+        .get("version")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+        .to_string();
+    let level = manifest_value
+        .get("level")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+
+    if let Err(reason) = verify_extracted(&staging, &manifest_value) {
+        let _ = std::fs::remove_dir_all(&staging);
+        eprintln!("terrakit: {reason}");
+        return Err(Exit::Verification);
+    }
+    progress("  file digests match the manifest");
+
+    // --- commit ----------------------------------------------------------------
+    let destination = project
+        .packages_dir
+        .join(&country)
+        .join(crate::registry::version_to_path_segment(&version));
+    if destination.exists() {
+        let _ = std::fs::remove_dir_all(&staging);
+        eprintln!(
+            "terrakit: {} already exists. Refusing to overwrite it; remove it first.",
+            destination.display()
+        );
+        return Err(Exit::Failure);
+    }
+
+    let staged = crate::install::StagedPackage {
+        directory: staging,
+        version: version.clone(),
+        size_on_disk: extracted.total_bytes,
+    };
+    let committed = match crate::install::commit(staged, &destination) {
+        Ok(committed) => committed,
+        Err(e) => {
+            eprintln!("terrakit: {e}");
+            return Err(Exit::Failure);
+        }
+    };
+    let _ = std::fs::remove_dir_all(&staging_root);
+
+    // --- lockfile ---------------------------------------------------------------
+    let mut manifest = match project.read_manifest() {
+        Ok(manifest) => manifest,
+        Err(reason) => {
+            eprintln!("terrakit: {reason}");
+            return Err(Exit::NotInstalled);
+        }
+    };
+    let resolution = manifest.resolution.get_or_insert_with(Default::default);
+    resolution.insert(
+        country.clone(),
+        package::ResolvedPackage {
+            version: version.clone(),
+            source: Some(format!("github.com/{}/{}", spec.owner, spec.repo)),
+            resolved_ref: Some(resolved.commit.clone()),
+            level: level.clone(),
+            integrity: Some(if signed { "verified".into() } else { "unsigned".into() }),
+        },
+    );
+    if let Err(e) = project.write_manifest(&manifest) {
+        return failure(format!("cannot write {}: {e}", project.manifest_path.display()));
+    }
+
+    match out_format {
+        Format::Json => emit(&format!(
+            "{{\"country\":{},\"version\":{},\"source\":{},\"resolvedRef\":{},\"level\":{},\
+             \"sizeBytes\":{},\"signedBy\":{},\"status\":\"installed\"}}",
+            jstr(&country),
+            jstr(&version),
+            jstr(&format!("github.com/{}/{}", spec.owner, spec.repo)),
+            jstr(&resolved.commit),
+            jstr_opt(&level),
+            committed.size_on_disk,
+            jstr(&key_id),
+        )),
+        Format::Human => {
+            emit(&format!(
+                "  installed  {} {} ({}, {}, {})",
+                country,
+                version,
+                level.as_deref().unwrap_or("-"),
+                download::human_bytes(committed.size_on_disk),
+                if signed {
+                    format!("signed by {key_id}")
+                } else {
+                    "UNSIGNED".to_string()
+                }
+            ));
+            emit(&format!("    source     github.com/{}/{}", spec.owner, spec.repo));
+            emit(&format!("    resolved   {}", resolved.commit));
+            emit(&format!("    License      {}", jstr(&manifest_value
+                .get("license")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown"))
+                .trim_matches('"')));
+            if let Some(entries) = manifest_value.get("attribution").and_then(|v| v.as_array()) {
+                for entry in entries.iter().filter_map(|e| e.as_str()) {
+                    emit(&format!("    Attribution  {entry}"));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Check every file the manifest names against the bytes on disk.
+///
+/// "A manifest cannot claim a checksum the files do not have." The signature already proves the
+/// manifest is authentic, but a tarball whose *contents* were assembled by whoever pushed the
+/// commit could still pair an authentic manifest with different files.
+fn verify_extracted(directory: &Path, manifest: &serde_json::Value) -> Result<(), String> {
+    let Some(files) = manifest.get("files").and_then(|f| f.as_array()) else {
+        return Err("the manifest has no files[] array.".to_string());
+    };
+    for entry in files {
+        let Some(name) = entry.get("path").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(expected) = entry.get("sha256").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let path = directory.join(name);
+        if !path.is_file() {
+            return Err(format!("the manifest names {name} but the repository does not contain it."));
+        }
+        let actual = crate::verify::sha256_file(&path)?;
+        if actual != expected {
+            return Err(format!(
+                "{name} does not match the manifest.\n       expected {expected}\n       actual   {actual}\n\
+                 \x20      The repository's contents and its signed manifest disagree. Nothing has \
+                 been installed."
+            ));
+        }
+    }
+    Ok(())
 }
 
 // --- cache ------------------------------------------------------------------

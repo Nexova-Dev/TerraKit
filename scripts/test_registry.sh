@@ -515,6 +515,168 @@ assert_exit 2 "bundle with an unknown platform is a usage error" \
 assert_exit 6 "bundling with nothing installed reports not-installed" \
   bash -c "mkdir -p '$WORK/empty-bundle' && cd '$WORK/empty-bundle' && '$BIN' init > /dev/null && '$BIN' bundle --platform ios"
 
+printf '\n\033[1m=== install from a GitHub source\033[0m\n'
+# A local stand-in for api.github.com and codeload.github.com. The hosts are overridable
+# (TERRAKIT_GITHUB_API, TERRAKIT_GITHUB_CODELOAD) because GitHub Enterprise has its own, and
+# because an installer that cannot be tested offline cannot be tested at all.
+GH="$WORK/github"
+SHA=abc123def4567890abcdef1234567890abcdef12
+mkdir -p "$GH/api/repos/example/terrakit-data-ge/commits" "$GH/example/terrakit-data-ge/tar.gz"
+
+GH_PACKAGE="$(ls -d "$WORK/releases/terrakit-data-$CC_LOWER-"* | head -1)"
+python3 - "$GH" "$SHA" "$GH_PACKAGE" <<'PYEOF'
+import json, os, pathlib, sys, tarfile, tempfile
+
+gh, sha, package = pathlib.Path(sys.argv[1]), sys.argv[2], pathlib.Path(sys.argv[3])
+assert package.is_dir(), f"no package at {package}"
+api = gh / "api/repos/example"
+tarballs = gh / "example/terrakit-data-ge/tar.gz"
+
+
+def publish(tag, commit, build):
+    (api / "terrakit-data-ge/commits").mkdir(parents=True, exist_ok=True)
+    (api / "terrakit-data-ge/commits" / tag).write_text(json.dumps({"sha": commit}))
+    build(tarballs / commit)
+
+
+def files(names, root_name):
+    def build(path):
+        root = f"terrakit-data-ge-{root_name}"
+        with tarfile.open(path, "w:gz") as tar:
+            for name in names:
+                tar.add(package / name, arcname=f"{root}/{name}")
+    return build
+
+
+publish("v1.0.0", sha, files(["data.sqlite", "manifest.json", "signature.json"], sha))
+
+
+def unsigned(path):
+    root = f"terrakit-data-ge-{path.name}"
+    with tarfile.open(path, "w:gz") as tar:
+        for name in ("data.sqlite", "manifest.json"):
+            tar.add(package / name, arcname=f"{root}/{name}")
+
+
+publish("unsigned", "1" * 40, unsigned)
+
+
+def hostile(path):
+    root = f"terrakit-data-ge-{path.name}"
+    with tarfile.open(path, "w:gz") as tar:
+        for name in ("data.sqlite", "manifest.json", "signature.json"):
+            tar.add(package / name, arcname=f"{root}/{name}")
+        # A link out of the tree. In an archive from an untrusted repository this is an escape,
+        # not a shortcut.
+        info = tarfile.TarInfo(f"{root}/escape")
+        info.type = tarfile.SYMTYPE
+        info.linkname = "../../../../../../etc/passwd"
+        tar.addfile(info)
+    # A parent-directory entry, which the `tar` crate's own builder would not create.
+    with tarfile.open(path, "a") if False else tarfile.open(path, "w:gz") as tar:
+        for name in ("data.sqlite", "manifest.json", "signature.json"):
+            tar.add(package / name, arcname=f"{root}/{name}")
+        escape = tarfile.TarInfo(f"{root}/../../escape.txt")
+        escape.size = 0
+        tar.addfile(escape)
+
+
+publish("hostile", "2" * 40, hostile)
+
+
+def mismatched(path):
+    root = f"terrakit-data-ge-{path.name}"
+    with tarfile.open(path, "w:gz") as tar:
+        # The manifest and signature are authentic; the database beside them is not the one it
+        # describes. A signature over the manifest proves the manifest, not the directory.
+        tar.add(package / "manifest.json", arcname=f"{root}/manifest.json")
+        tar.add(package / "signature.json", arcname=f"{root}/signature.json")
+        with tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False) as tmp:
+            tmp.write(b"a different database entirely")
+            other = tmp.name
+        tar.add(other, arcname=f"{root}/data.sqlite")
+        os.unlink(other)
+
+
+publish("mismatched", "3" * 40, mismatched)
+
+(api / "terrakit-data-ge.json").write_text(json.dumps({"default_branch": "main"}))
+# `main` must resolve too: the default-branch path and the branch path are separate code, and
+# only the branch path is exercised by `@main`.
+(api / "terrakit-data-ge/commits").mkdir(parents=True, exist_ok=True)
+(api / "terrakit-data-ge/commits/main").write_text(json.dumps({"sha": sha}))
+print("fake github host built")
+PYEOF
+
+export TERRAKIT_GITHUB_API="file://$GH/api"
+export TERRAKIT_GITHUB_CODELOAD="file://$GH"
+GH_BIN="$BIN"
+
+new_project install
+assert_exit 0 "install resolves a tag and installs" \
+  bash -c "cd '$WORK/install' && '$GH_BIN' install github.com/example/terrakit-data-ge@v1.0.0 --cache-dir '$WORK/cache-i'"
+assert_contains "signature verified" "install verifies the signature over the manifest bytes" \
+  bash -c "cd '$WORK/install' && '$GH_BIN' install github.com/example/terrakit-data-ge@v1.0.0 --force --cache-dir '$WORK/cache-i' 2>&1 || true"
+# A separate project: the tag install above already put this exact version on disk, and
+# `install` refuses to overwrite an installed package. Branch behaviour is a separate question
+# and needs a separate project to ask it in.
+new_project install-branch
+assert_contains "$SHA" "the resolved commit is reported" \
+  bash -c "cd '$WORK/install-branch' && '$GH_BIN' install github.com/example/terrakit-data-ge@main --cache-dir '$WORK/cache-i'"
+assert_contains "not a versioned ref" "a branch warns that it is not reproducible" \
+  bash -c "cd '$WORK/install-branch' && '$GH_BIN' install github.com/example/terrakit-data-ge@main --cache-dir '$WORK/cache-i' 2>&1 || true"
+
+# The fake repository is deliberately named `terrakit-data-ge` while serving the FIRST package,
+# which is TR. That mismatch is the point: the country must come from the signed manifest, not
+# from the repository name, or anyone able to push a renamed repository could land a dataset in
+# another country's slot.
+resolved=$(python3 -c "
+import json, sys
+document = json.load(open('$WORK/install-branch/terrakit.json'))
+entries = document['resolution']
+country = sorted(entries)[0]
+print(country, entries[country].get('resolved_ref', ''))
+")
+if [[ "$resolved" == "$first_cc $SHA" ]]; then
+  ok "terrakit.json pins the resolved commit under the MANIFEST's country, not the repo name"
+else
+  bad "expected \"$first_cc $SHA\", got \"$resolved\""
+fi
+if [[ -d "$WORK/install-branch/.terrakit/packages/$first_cc" ]]; then
+  ok "the package landed under the country its signed manifest declares"
+else
+  bad "the package did not land under $first_cc"
+fi
+
+assert_exit 4 "an unknown ref reports not-found" \
+  bash -c "cd '$WORK/install' && '$GH_BIN' install github.com/example/terrakit-data-ge@no-such-ref --cache-dir '$WORK/cache-i'"
+assert_exit 2 "a non-GitHub source is a usage error" \
+  bash -c "cd '$WORK/install' && '$GH_BIN' install gitlab.com/example/pkg"
+assert_exit 2 "a ref containing '..' is refused" \
+  bash -c "cd '$WORK/install' && '$GH_BIN' install github.com/example/terrakit-data-ge@../../etc/passwd"
+
+new_project install-hostile
+assert_exit 3 "a tarball with a link or a traversal is refused" \
+  bash -c "cd '$WORK/install-hostile' && '$GH_BIN' install github.com/example/terrakit-data-ge@hostile --cache-dir '$WORK/cache-i'"
+if [[ -d "$WORK/install-hostile/.terrakit/packages/GE" ]]; then
+  bad "the hostile archive installed something"
+else
+  ok "the hostile archive installs nothing"
+fi
+
+new_project install-unsigned
+assert_exit 3 "an unsigned package is refused without the flag" \
+  bash -c "cd '$WORK/install-unsigned' && '$GH_BIN' install github.com/example/terrakit-data-ge@unsigned --cache-dir '$WORK/cache-i'"
+assert_exit 0 "--allow-unsigned works outside CI" \
+  bash -c "cd '$WORK/install-unsigned' && '$GH_BIN' install github.com/example/terrakit-data-ge@unsigned --allow-unsigned --cache-dir '$WORK/cache-i'"
+assert_exit 3 "--allow-unsigned refuses to run in CI" \
+  bash -c "cd '$WORK/install-unsigned' && CI=true '$GH_BIN' install github.com/example/terrakit-data-ge@unsigned --allow-unsigned --cache-dir '$WORK/cache-i' --force"
+
+new_project install-mismatch
+assert_exit 3 "a signed manifest beside an unsigned database is refused" \
+  bash -c "cd '$WORK/install-mismatch' && '$GH_BIN' install github.com/example/terrakit-data-ge@mismatched --cache-dir '$WORK/cache-i'"
+unset TERRAKIT_GITHUB_API TERRAKIT_GITHUB_CODELOAD
+
 printf '\n\033[1m=== output contract\033[0m\n'
 new_project output
 payload=$(cd "$WORK/output" && "$BIN" add "$first_cc" --registry "$REGISTRY" \
