@@ -47,7 +47,7 @@ No API key. No network call. No geographic database to build and maintain.
 | Package validation | **working** — §30 rules, zero errors on all four |
 | Reproducible builds | **verified** — byte-identical across runs |
 | Localized / exonym / historic names | **working** — 19.2 M upstream rows, streamed |
-| Rust CLI | **working** — query commands, `add`, `remove` and `update` complete |
+| Rust CLI | **working** — query commands plus `add`, `remove`, `update`, `cache`, `bundle` |
 | Registry | **working** — static `index.json` on object storage, Ed25519-signed releases |
 | Swift SDK | specified ([`SDK_SPEC.md`](SDK_SPEC.md)), not built |
 | Kotlin SDK | specified, not built |
@@ -172,9 +172,10 @@ tools/build_registry.py datasets/ --out registry/ \
 ```
 
 `--production` refuses anything signed with the committed development key. That guarantee is
-tested, not just documented: [`scripts/test_registry.sh`](scripts/test_registry.sh) is 52 checks
-covering install, update, remove, cache reuse and pruning, damage detection and repair,
-idempotency, relocatability, reproducibility, the four refusals, and the `--json` contract.
+tested, not just documented: [`scripts/test_registry.sh`](scripts/test_registry.sh) is 75 checks
+covering install, update, remove, cache listing, verification and pruning, mobile bundling,
+damage detection and repair, idempotency, relocatability, reproducibility, the four refusals, and
+the `--json` contract.
 
 ### Removing and updating
 
@@ -207,8 +208,42 @@ $ echo $?
 3
 ```
 
-`cache`, `bundle` and `install` are specified in [`CLI_SPEC.md`](CLI_SPEC.md) but not built. They
-say so rather than pretending the command does not exist.
+### Cache and mobile bundles
+
+```console
+$ terrakit cache list --cache-dir ~/.cache/terrakit
+  DIGEST                              SIZE    AGE  STATE
+  5fe6db5509f4da40               261.0 KB     9s  in use
+
+$ terrakit cache verify
+1 cache entry verified, 261.0 KB
+
+$ terrakit bundle --platform all
+bundled 1 package(s) for ios, android
+  6 file(s), 2.7 MB
+```
+
+The cache is shared across projects, so `cache clean` only removes entries nothing installed
+references *and* that are older than a week — an entry another project installed a minute ago is
+unreferenced as far as this project can tell. `cache verify` re-hashes every entry and deletes the
+ones that fail, because an entry that fails its own digest has no value.
+
+`bundle` closes the gap [`ARCHITECTURE.md` §6](ARCHITECTURE.md#6-mobile-packaging) names:
+`terrakit add` writes to `.terrakit/`, but an iOS or Android app reads only from its bundle. The
+output is declarative and checked in, so CI needs no network:
+
+```text
+bundle/
+├── terrakit-bundle.json          canonical manifest, platform-independent
+├── ios/terrakit/<CC>/<version>/  add as an Xcode folder reference
+└── android/
+    ├── assets/terrakit/<CC>/<version>/   Gradle ships assets/ verbatim
+    └── terrakuit.gradle          noCompress snippet, included by the app
+```
+
+`install` from a GitHub source is specified in [`CLI_SPEC.md`](CLI_SPEC.md) but not built: it needs
+tarball access, which is a separate transport with its own trust story. It says so rather than
+pretending the command does not exist.
 
 Read the specification documents before contributing. They are the source of truth, and code that
 disagrees with them is a bug.

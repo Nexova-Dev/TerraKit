@@ -415,6 +415,106 @@ assert_exit 0 "--force repairs it" \
 assert_exit 0 "the repaired package validates" \
   bash -c "cd '$WORK/damaged' && '$BIN' validate '$first_cc'"
 
+printf '\n\033[1m=== cache\033[0m\n'
+new_project cache
+CACHE="$WORK/cache-cmds"
+in_project cache add "$first_cc" --registry "$REGISTRY" --cache-dir "$CACHE" >/dev/null 2>&1
+
+assert_contains "$CACHE" "cache path reports the --cache-dir the install used" \
+  bash -c "cd '$WORK/cache' && '$BIN' cache path --cache-dir '$CACHE'"
+assert_exit 0 "cache list succeeds" \
+  bash -c "cd '$WORK/cache' && '$BIN' cache list --cache-dir '$CACHE'"
+assert_contains "in use" "cache list shows the artifact an installed package references" \
+  bash -c "cd '$WORK/cache' && '$BIN' cache list --cache-dir '$CACHE'"
+assert_exit 0 "cache verify passes on a good cache" \
+  bash -c "cd '$WORK/cache' && '$BIN' cache verify --cache-dir '$CACHE'"
+assert_exit 2 "an unknown cache subcommand is a usage error" \
+  bash -c "cd '$WORK/cache' && '$BIN' cache frobnicate --cache-dir '$CACHE'"
+assert_exit 2 "cache with no subcommand is a usage error" \
+  bash -c "cd '$WORK/cache' && '$BIN' cache --cache-dir '$CACHE'"
+
+# A fresh entry is unreferenced by every project this one can see, so `clean` must keep it.
+assert_exit 0 "cache clean succeeds" \
+  bash -c "cd '$WORK/cache' && '$BIN' cache clean --cache-dir '$CACHE'"
+kept=$(find "$CACHE/artifacts" -name '*.zst' 2>/dev/null | wc -l | tr -d ' ')
+if [[ "$kept" == "1" ]]; then
+  ok "cache clean keeps an entry that is still in use"
+else
+  bad "cache clean removed an entry in use ($kept remain)"
+fi
+
+# A corrupt cache entry must be reported, not silently served.
+printf 'X' | dd "of=$(find "$CACHE/artifacts" -name '*.zst' | head -1)" bs=1 seek=64 conv=notrunc 2>/dev/null
+# One invocation, because a failed entry is deleted: a second run finds a clean cache and
+# would assert nothing about the original failure.
+verify_json=$(cd "$WORK/cache" && "$BIN" cache verify --cache-dir "$CACHE" --json 2>/dev/null) && verify_code=0 || verify_code=$?
+if [[ "$verify_code" == "3" ]]; then
+  ok "cache verify reports a corrupted entry as a verification failure (exit 3)"
+else
+  bad "cache verify returned $verify_code, expected 3"
+fi
+if grep -q "do not match" <<< "$verify_json"; then
+  ok "cache verify says what was wrong"
+else
+  bad "cache verify did not explain the failure: $verify_json"
+fi
+assert_exit 0 "the corrupt entry is gone, so verify passes again" \
+  bash -c "cd '$WORK/cache' && '$BIN' cache verify --cache-dir '$CACHE'"
+
+# And a warm-cache install must refuse to use a corrupted entry.
+assert_exit 0 "reinstalling over a corrupted cache entry succeeds" \
+  bash -c "cd '$WORK/cache' && '$BIN' add '$first_cc' --registry '$REGISTRY' --cache-dir '$CACHE'"
+
+printf '\n\033[1m=== bundle\033[0m\n'
+new_project bundle
+in_project bundle add "$first_cc" --registry "$REGISTRY" --cache-dir "$WORK/cache-b" >/dev/null 2>&1
+assert_exit 0 "bundle --platform all succeeds" \
+  bash -c "cd '$WORK/bundle' && '$BIN' bundle --platform all"
+if [[ -f "$WORK/bundle/bundle/terrakit-bundle.json" ]]; then
+  ok "the canonical manifest is written"
+else
+  bad "terrakit-bundle.json was not written"
+fi
+if [[ -f "$WORK/bundle/bundle/ios/terrakit/$first_cc/$VERSION_SEGMENT/data.sqlite" ]]; then
+  ok "the iOS tree carries the database for an Xcode folder reference"
+else
+  bad "bundle/ios/terrakit is missing the database"
+fi
+if [[ -f "$WORK/bundle/bundle/android/assets/terrakit/$first_cc/$VERSION_SEGMENT/data.sqlite" ]]; then
+  ok "the Android tree carries the database under assets/"
+else
+  bad "bundle/android/assets/terrakit is missing the database"
+fi
+assert_contains "noCompress" "the Gradle snippet asks for noCompress on sqlite" \
+  bash -c "cat '$WORK/bundle/bundle/android/terrakuit.gradle'"
+assert_exit 0 "the bundle manifest is valid JSON" \
+  bash -c "python3 -c 'import json; json.load(open(\"$WORK/bundle/bundle/terrakit-bundle.json\"))'"
+
+# The bundled database must be the installed one, byte for byte.
+bundled="$WORK/bundle/bundle/ios/terrakit/$first_cc/$VERSION_SEGMENT/data.sqlite"
+installed="$WORK/bundle/.terrakit/packages/$first_cc/$VERSION_SEGMENT/data.sqlite"
+if cmp -s "$bundled" "$installed"; then
+  ok "the bundled database is byte-identical to the installed one"
+else
+  bad "the bundled database differs from the installed one"
+fi
+
+# Rebuilding must not churn the checked-in manifest.
+cp "$WORK/bundle/bundle/terrakit-bundle.json" "$WORK/bundle-manifest-first.json"
+bash -c "cd '$WORK/bundle' && '$BIN' bundle --platform all" >/dev/null 2>&1
+if cmp -s "$WORK/bundle/bundle/terrakit-bundle.json" "$WORK/bundle-manifest-first.json"; then
+  ok "the bundle manifest is byte-identical across rebuilds"
+else
+  bad "the bundle manifest changed between identical rebuilds"
+fi
+
+assert_exit 2 "bundle without --platform is a usage error" \
+  bash -c "cd '$WORK/bundle' && '$BIN' bundle"
+assert_exit 2 "bundle with an unknown platform is a usage error" \
+  bash -c "cd '$WORK/bundle' && '$BIN' bundle --platform windows"
+assert_exit 6 "bundling with nothing installed reports not-installed" \
+  bash -c "mkdir -p '$WORK/empty-bundle' && cd '$WORK/empty-bundle' && '$BIN' init > /dev/null && '$BIN' bundle --platform ios"
+
 printf '\n\033[1m=== output contract\033[0m\n'
 new_project output
 payload=$(cd "$WORK/output" && "$BIN" add "$first_cc" --registry "$REGISTRY" \

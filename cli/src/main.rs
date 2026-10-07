@@ -44,6 +44,8 @@ GLOBAL FLAGS
     --no-color              Disable colour (NO_COLOR is honoured)
     --registry <url>        Alternate registry, for mirrors and testing
     --cache-dir <path>      Override the shared cache location
+    --platform <name>       bundle: ios, android or all
+    --out <dir>             bundle: destination for the resource manifest tree
     --offline               Fail rather than reach the network
     --help                  Show this message
 
@@ -91,6 +93,10 @@ struct Flags {
     /// `remove --prune`: also drop unreferenced cache entries.
     prune: bool,
     keep_cache: bool,
+    /// `bundle --out <dir>`: where the resource manifest tree is written.
+    bundle_dir: Option<PathBuf>,
+    /// `cache clean --all`: remove everything, not only prunable entries.
+    clean_all: bool,
 }
 
 impl Default for Flags {
@@ -112,6 +118,8 @@ impl Default for Flags {
             check_only: false,
             prune: false,
             keep_cache: false,
+            bundle_dir: None,
+            clean_all: false,
         }
     }
 }
@@ -165,6 +173,9 @@ fn run(args: &[String]) -> Outcome {
             // passes `--check` and gets an install would be a very bad afternoon.
             "--check" | "--check-only" | "--dry-run" => flags.check_only = true,
             "--prune" => flags.prune = true,
+            // `cache clean --all` is documented (CLI_SPEC.md 2.10). Distinct from --force, which
+            // means "replace an installed package".
+            "--all" => flags.clean_all = true,
             "--keep-cache" => flags.keep_cache = true,
             "--strict" => flags.strict = true,
             "--force" => flags.force = true,
@@ -201,6 +212,7 @@ fn run(args: &[String]) -> Outcome {
             "--level" | "-l" => flags.level = Some(take_value("--level")?),
             "--platform" => flags.platform = Some(take_value("--platform")?),
             "--cache-dir" => flags.cache_dir = Some(PathBuf::from(take_value("--cache-dir")?)),
+            "--out" => flags.bundle_dir = Some(PathBuf::from(take_value("--out")?)),
             // `--version` is overloaded, and the overload is the documented one:
             // `terrakit add TR --version 2026.10.1` asks for a package version, while
             // `terrakit --version` reports the CLI's own. Disambiguated by whether a
@@ -360,10 +372,65 @@ fn run(args: &[String]) -> Outcome {
             commands::remove(&project, &positionals, &context.cache_dir, prune, out_format)
         }
 
-        // Specified in CLI_SPEC.md but not built: they need the registry, which is not hosted
-        // yet. Reported as "not implemented" rather than "unknown command", because the
-        // difference matters — the first says the design is settled and the work is pending,
-        // the second says the user made a typo.
+        "cache" => {
+            let project = package::require_project(&cwd)?;
+            let context = terrakit_cli::commands::Context::load(
+                flags.registry.as_deref(),
+                flags.cache_dir.as_deref(),
+                flags.offline,
+            )
+            .map_err(|e| {
+                eprintln!("terrakit: {e}");
+                Exit::Usage
+            })?;
+            let Some(subcommand) = positionals.first().map(String::as_str) else {
+                return usage_error(
+                    "cache needs a subcommand: list, clean, path or verify",
+                );
+            };
+            commands::cache(
+                &project,
+                &context.cache_dir,
+                subcommand,
+                flags.clean_all,
+                out_format,
+            )
+        }
+
+        "bundle" => {
+            let project = package::require_project(&cwd)?;
+            let Some(platform) = flags.platform.as_deref() else {
+                return usage_error(
+                    "bundle needs --platform ios, --platform android or --platform all",
+                );
+            };
+            let platforms = if platform.eq_ignore_ascii_case("all") {
+                vec![terrakit_cli::bundle::Platform::Ios, terrakit_cli::bundle::Platform::Android]
+            } else {
+                match terrakit_cli::bundle::Platform::parse(platform) {
+                    Some(one) => vec![one],
+                    None => {
+                        return usage_error(format!(
+                            "{platform:?} is not a platform. Use ios, android or all."
+                        ))
+                    }
+                }
+            };
+            let plan = terrakit_cli::bundle::BundlePlan {
+                out_dir: flags
+                    .bundle_dir
+                    .clone()
+                    .unwrap_or_else(|| cwd.join("bundle")),
+                platforms,
+                verify: true,
+            };
+            commands::bundle(&project, &plan, out_format)
+        }
+
+        // Specified in CLI_SPEC.md but not built: it needs GitHub tarball access, which is a
+        // separate transport with its own trust story. Reported as "not implemented" rather than
+        // "unknown command", because the difference matters — the first says the design is
+        // settled and the work is pending, the second says the user made a typo.
         //
         // Exit::Failure rather than a new code: CLI_SPEC.md section 1 fixes the code table,
         // and adding an undeclared one would break the contract a script depends on.
@@ -381,7 +448,7 @@ fn run(args: &[String]) -> Outcome {
     }
 }
 
-const COMMANDS_NOT_YET_BUILT: &[&str] = &["install", "cache", "bundle"];
+const COMMANDS_NOT_YET_BUILT: &[&str] = &["install"];
 
 fn commands_validate(
     project: &package::Project,

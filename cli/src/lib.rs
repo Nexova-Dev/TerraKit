@@ -5,6 +5,8 @@
 //! in isolation, and it means the cross-SDK conformance suite can call the same
 //! `search()` the CLI does rather than shelling out to it and parsing stdout.
 
+pub mod bundle;
+pub mod cache;
 pub mod commands;
 pub mod download;
 pub mod exit;

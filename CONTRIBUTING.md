@@ -66,17 +66,18 @@ Follow it. Work out of sequence creates work for everyone else.
 3. cli/                  read-only commands; add/install over the registry   done
 4. registry/             static index + object storage                       done
 5. cli/                  add, remove, update                                 done
-6. cli/                  cache, bundle, install                              next
-7. sdk/swift/            query engine over the produced package
-8. sdk/kotlin/           same surface, conformance-tested against Swift
-9. Remaining countries   US, GB — plus JP in the test set
-10. search depth         autocomplete ranking, boundary polygons
+6. cli/                  cache, bundle                                       done
+7. cli/                  install from a GitHub source                        next
+8. sdk/swift/            query engine over the produced package
+9. sdk/kotlin/           same surface, conformance-tested against Swift
+10. Remaining countries  US, GB — plus JP in the test set
+11. search depth         autocomplete ranking, boundary polygons
 ```
 
 The registry came before the remaining CLI commands because they cannot be built or tested without
 it: `remove` and `update` are both built on the resolution `add` records.
 
-`add`, `remove` and `update` are complete.
+`add`, `remove`, `update`, `cache` and `bundle` are complete.
 [`scripts/test_registry.sh`](scripts/test_registry.sh) builds real packages, publishes them,
 installs, updates and removes them, and then attacks the result: a flipped byte, a missing
 signature, a manifest edited after signing, and a package signed by an untrusted key must each be
@@ -89,7 +90,7 @@ up to date. Run it after touching [`cli/src/commands.rs`](cli/src/commands.rs),
 TERRAKIT_CACHE=~/.cache/terrakit/sources bash scripts/test_registry.sh
 ```
 
-Steps 7 and 8 are conformance-tested against the **same package bytes**. An implementation that
+Steps 8 and 9 are conformance-tested against the **same package bytes**. An implementation that
 passes with its own fixture and diverges from the other SDK is not done.
 
 ---

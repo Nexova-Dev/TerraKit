@@ -2007,6 +2007,241 @@ fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
         .then_with(|| a.cmp(b))
 }
 
+// --- cache ------------------------------------------------------------------
+
+/// `terrakit cache <list|clean|path|verify>`
+///
+/// Thin output over [`crate::cache`], which owns the semantics and the tests. The split is
+/// because the rules here are the interesting part and they are not about formatting.
+pub fn cache(
+    project: &Project,
+    cache_dir: &Path,
+    subcommand: &str,
+    all: bool,
+    out_format: Format,
+) -> Outcome {
+    match subcommand {
+        "path" => {
+            // Machine-readable on purpose: this is what a build script interpolates, and a
+            // human-readable line with decoration would be pasted into it verbatim.
+            match out_format {
+                Format::Json => emit(&format!("{{\"path\":{}}}", jstr(&cache_dir.display().to_string()))),
+                Format::Human => emit(&cache_dir.display().to_string()),
+            }
+            Ok(())
+        }
+
+        "list" => {
+            let entries = crate::cache::list(cache_dir, Some(project));
+            let total: u64 = entries.iter().map(|e| e.size).sum();
+            let referenced = entries.iter().filter(|e| e.referenced).count();
+
+            match out_format {
+                Format::Json => {
+                    let rows: Vec<String> = entries
+                        .iter()
+                        .map(|entry| {
+                            format!(
+                                "{{\"digest\":{},\"file\":{},\"sizeBytes\":{},\"ageSeconds\":{},\"referenced\":{}}}",
+                                jstr(&entry.digest),
+                                jstr(&entry.path.display().to_string()),
+                                entry.size,
+                                entry.age.as_secs(),
+                                entry.referenced
+                            )
+                        })
+                        .collect();
+                    emit(&format!(
+                        "{{\"path\":{},\"count\":{},\"totalBytes\":{},\"referenced\":{},\"entries\":[{}]}}",
+                        jstr(&cache_dir.display().to_string()),
+                        entries.len(),
+                        total,
+                        referenced,
+                        rows.join(",")
+                    ));
+                }
+                Format::Human => {
+                    if entries.is_empty() {
+                        emit("Cache is empty.");
+                        return Ok(());
+                    }
+                    emit(&format!(
+                        "  {:<64}  {:>9}  {:>5}  {}",
+                        "DIGEST", "SIZE", "AGE", "STATE"
+                    ));
+                    for entry in &entries {
+                        let state = if !entry.looks_like_digest {
+                            "BAD NAME".to_string()
+                        } else if entry.referenced {
+                            "in use".to_string()
+                        } else {
+                            "unused".to_string()
+                        };
+                        emit(&format!(
+                            "  {}  {:>9}  {:>5}  {}",
+                            &entry.digest[..entry.digest.len().min(16)],
+                            download::human_bytes(entry.size),
+                            crate::cache::human_age(entry.age),
+                            state
+                        ));
+                    }
+                    emit("");
+                    emit(&format!(
+                        "{} entr{}, {} total, {referenced} in use",
+                        entries.len(),
+                        if entries.len() == 1 { "y" } else { "ies" },
+                        download::human_bytes(total)
+                    ));
+                }
+            }
+            Ok(())
+        }
+
+        "clean" => {
+            let report = crate::cache::clean(cache_dir, Some(project), all).map_err(|e| {
+                eprintln!("terrakit: {e}");
+                Exit::Failure
+            })?;
+
+            match out_format {
+                Format::Json => emit(&format!(
+                    "{{\"ok\":true,\"all\":{},\"removed\":{},\"freedBytes\":{},\"kept\":{}}}",
+                    all,
+                    report.removed.len(),
+                    report.freed,
+                    report.kept.len()
+                )),
+                Format::Human => {
+                    if report.removed.is_empty() {
+                        emit(
+                            &(if all {
+                                "Cache is already empty.".to_string()
+                            } else {
+                                // Says why, because "nothing to remove" with entries present
+                                // reads as a bug and sends the user looking for one.
+                                format!(
+                                    "Nothing to remove. {} of {} cached entr{} in use; the rest\n\
+                                     are too recent to be certainly unused by another project.",
+                                    report.kept.len(),
+                                    report.kept.len(),
+                                    if report.kept.len() == 1 { "y is" } else { "ies are" }
+                                )
+                            }),
+                        );
+                    } else {
+                        emit(&format!(
+                            "removed {} cache entr{} ({})",
+                            report.removed.len(),
+                            if report.removed.len() == 1 { "y" } else { "ies" },
+                            download::human_bytes(report.freed)
+                        ));
+                    }
+                    for (digest, reason) in &report.kept {
+                        progress(&format!(
+                            "  kept {}… ({reason})",
+                            &digest[..digest.len().min(12)]
+                        ));
+                    }
+                }
+            }
+            Ok(())
+        }
+
+        "verify" => {
+            let (checked, bytes, failures) = crate::cache::verify(cache_dir).map_err(|e| {
+                eprintln!("terrakit: {e}");
+                Exit::Failure
+            })?;
+
+            match out_format {
+                Format::Json => {
+                    let rows: Vec<String> = failures
+                        .iter()
+                        .map(|failure| {
+                            format!(
+                                "{{\"digest\":{},\"reason\":{},\"expected\":{},\"actual\":{}}}",
+                                jstr(&failure.digest),
+                                jstr(&failure.reason),
+                                jstr(&failure.expected),
+                                jstr(&failure.actual)
+                            )
+                        })
+                        .collect();
+                    emit(&format!(
+                        "{{\"ok\":{},\"checked\":{},\"bytes\":{},\"failures\":[{}]}}",
+                        failures.is_empty(),
+                        checked,
+                        bytes,
+                        rows.join(",")
+                    ));
+                }
+                Format::Human => {
+                    if failures.is_empty() {
+                        emit(&format!(
+                            "{} cache entr{} verified, {}",
+                            checked,
+                            if checked == 1 { "y" } else { "ies" },
+                            download::human_bytes(bytes)
+                        ));
+                    } else {
+                        eprintln!("terrakit: {} cache entries failed verification:", failures.len());
+                        for failure in &failures {
+                            eprintln!("  {}  {}", &failure.digest[..16.min(failure.digest.len())], failure.reason);
+                        }
+                        eprintln!("  Removed. A cache entry that fails its own digest has no value.");
+                    }
+                }
+            }
+            Err(crate::cache::exit_for_verify(failures.len()))
+        }
+
+        other => usage_error(format!(
+            "unknown cache subcommand {other:?}. Use list, clean, path or verify."
+        )),
+    }
+}
+
+// --- bundle -----------------------------------------------------------------
+
+/// `terrakit bundle --platform <ios|android|all>`
+///
+/// Progress goes to stderr and the report to stdout, so `--json` emits one document.
+pub fn bundle(project: &Project, plan: &crate::bundle::BundlePlan, out_format: Format) -> Outcome {
+    let packages = crate::bundle::plan(project).map_err(|e| {
+        eprintln!("terrakit: {e}");
+        Exit::NotInstalled
+    })?;
+
+    // Checked here rather than inside `emit`, because the two failures are different. A project
+    // with nothing installed is `6` ("a required package is not installed"); `emit` returning
+    // empty is a programming error, and reporting it as `6` would send a user looking for a
+    // package they never asked for.
+    if packages.is_empty() {
+        eprintln!("terrakit: no packages are installed; nothing to bundle.");
+        eprintln!("       Run 'terrakit add <CC>' first.");
+        return Err(Exit::NotInstalled);
+    }
+
+    let report = crate::bundle::emit(plan, &packages).map_err(|e| {
+        eprintln!("terrakit: {e}");
+        crate::bundle::exit_for(&e)
+    })?;
+
+    match out_format {
+        Format::Json => emit(&report.to_json()),
+        Format::Human => {
+            for line in report.to_lines() {
+                emit(&line);
+            }
+            progress(
+                "Add bundle/ios/terrakit as an Xcode folder reference, or bundle/android/assets/terrakit \
+                 to the Gradle assets.",
+            );
+        }
+    }
+    Ok(())
+}
+
 // --- helpers ---------------------------------------------------------------
 
 fn format_thousands(value: i64) -> String {

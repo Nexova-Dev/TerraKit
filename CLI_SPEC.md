@@ -328,6 +328,24 @@ terrakit cache verify             # re-check cached checksums
 The cache is shared across projects, so `clean` without `--all` only removes
 entries no project references. `clean --all` is always safe: it is a cache.
 
+Two things the implementation makes explicit, because both are silent when wrong:
+
+- **"Unreferenced" means unreferenced by anything this command can see.** Only this project's
+  installed packages are visible, so an entry another project installed a minute ago is
+  unreferenced by definition. `clean` therefore also applies a recency floor
+  ([`PRUNE_MIN_AGE`](cli/src/cache.rs), 7 days): an entry younger than that is left alone whatever
+  its state, because the overwhelmingly common reason an entry is young is that something is
+  installing or has just installed it. `clean --all` is the honest full delete.
+- **A cache entry is a claim, not a fact.** Its filename is a digest, but an interrupted write, a
+  truncated file or a poisoned entry would otherwise be served silently, because the fast path
+  skips the download and with it the checksum. `add` re-verifies before use; `cache verify`
+  re-checks everything at once and **deletes** every entry that fails, since such an entry has no
+  value and would make the next `add` re-download only to fail again.
+
+`cache verify` exits `3` on any failure, matching every other verification failure in the CLI, so
+CI needs no special case for a corrupt cache. `cache path` prints the bare path with no decoration
+— it is what a build script interpolates.
+
 ### 2.11 `install`
 
 ```bash
@@ -360,6 +378,34 @@ reads only from its bundle and `terrakit add` writes to `.terrakit/`
 Emits a checked-in resource manifest — an Xcode resource list and, for Gradle, an
 asset registration. Declared rather than generated at build time so CI stays
 hermetic and does not need network access.
+
+```text
+bundle/
+├── terrakit-bundle.json          canonical manifest, platform-independent
+├── ios/terrakit/<CC>/<version>/  add as an Xcode folder reference
+└── android/
+    ├── assets/terrakit/<CC>/<version>/   Gradle ships assets/ verbatim
+    └── terrakuit.gradle          noCompress snippet, included by the app
+```
+
+Rules the implementation makes explicit:
+
+- **One version per country.** A bundle carries the version `terrakit.json` selected. Shipping two
+  would duplicate ~10 MB into a release and give the SDK's first-match resolution two answers.
+- **Only `data.sqlite`, `manifest.json` and `signature.json` are copied.** A staging leftover or a
+  `.bak` from a crashed run is not a resource, and shipping it is how a dead file ends up in a
+  release.
+- **Every copied file is verified against the canonical manifest.** The copy is the last
+  opportunity — nothing downstream reads these files until the app ships, and an app cannot detect
+  a corrupted bundle.
+- **`terrakit-bundle.json` is byte-identical across rebuilds.** A checked-in manifest that changes
+  on every invocation cannot be reviewed in a diff, which defeats the point of checking it in.
+- **`--out <dir>` overrides the destination**, default `bundle/` in the project root.
+
+Android gets an explicit `noCompress` because a SQLite file inside an APK's asset stream is not
+seekable — SQLite needs `mmap` and random access — so it would be inflated twice and still
+unreadable in place. It is written as a `.gradle` file to include rather than printed, because a
+snippet that has to be pasted is a snippet that gets pasted wrong.
 
 ---
 
