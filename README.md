@@ -14,19 +14,31 @@ terrakit add TR
 ```swift
 import TerraKit
 
-let antalya = Terra.city("Antalya")
-print(antalya.name)        // Antalya
-print(antalya.districts)   // [Muratpaşa, Kepez, ...]
-print(antalya.timezone)    // Europe/Istanbul
+// Discovery runs on first use: the application bundle first, then `.terrakit/packages/`.
+let antalya = try Terra.city("Antalya", country: "TR").first!
+
+antalya.name                   // "Antalya"
+antalya.type                   // .city
+antalya.timezoneID             // "Europe/Istanbul"
+antalya.population             // 1_335_002
+antalya.ancestors.map(\.name)   // ["Türkiye", "Antalya", "Antalya"] — country, province, city
+antalya.localizedName(for: .english)  // "Antalya"
+
+try Terra.autocomplete("anta", country: "TR", limit: 2).map(\.text)
+// ["Antalya, Türkiye", "Antalya, Antalya"]
 ```
 
 ```kotlin
 import com.terrakit.core.Terra
+import com.terrakit.core.Language
 
-val antalya = Terra.city("Antalya")
-println(antalya.name)
-println(antalya.districts)
-println(antalya.timezone)
+val antalya = Terra.city("Antalya", country = "TR").first()
+
+println(antalya.name)                          // Antalya
+println(antalya.type)                          // PlaceType.CITY
+println(antalya.timezoneId)                    // Europe/Istanbul
+println(antalya.ancestors.map { it.name })     // [Türkiye, Antalya, Antalya]
+println(antalya.localizedName(Language.ENGLISH)) // Antalya
 ```
 
 No API key. No network call. No geographic database to build and maintain.
@@ -49,8 +61,8 @@ No API key. No network call. No geographic database to build and maintain.
 | Localized / exonym / historic names | **working** — 19.2 M upstream rows, streamed |
 | Rust CLI | **working** — query commands plus `add`, `remove`, `update`, `cache`, `bundle` |
 | Registry | **working** — static `index.json` on object storage, Ed25519-signed releases |
-| Swift SDK | specified ([`SDK_SPEC.md`](SDK_SPEC.md)), not built |
-| Kotlin SDK | specified, not built |
+| Swift SDK | built, 23 tests, cross-SDK conformance against the CLI |
+| Kotlin SDK | specified ([`SDK_SPEC.md`](SDK_SPEC.md)), not built |
 | Registry | static layout specified, not hosted |
 
 ### Packages built from live data

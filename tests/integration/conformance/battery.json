@@ -1,0 +1,220 @@
+{
+  "$comment": [
+    "The shared query battery. Every implementation runs exactly these and compares result ID",
+    "SEQUENCES, not counts -- SDK_SPEC.md section 14: 'compares result ID sets and orderings, not",
+    "just counts'. A count matches while the order does not, which is the failure a count-based",
+    "check cannot see and a user experiences as 'why is the right answer fourth'.",
+    "",
+    "expected/*.json is produced by the Rust CLI, which is the reference implementation:",
+    "  tools/conformance.py --generate --packages <dir>",
+    "",
+    "The battery covers the cases that actually differ between implementations:",
+    "- the three search mechanisms and their order",
+    "- historic and exonym names, which come from place_alternate_names and are the reason the",
+    "  SDKs carry them",
+    "- CJK, where the trigram tokenizer's three-character floor is visible",
+    "- hierarchy depth, which is level-specific and differs per country",
+    "- postal codes covering several places",
+    "- nearest, where the R*Tree is a prefilter and the ordering is SDK code"
+  ],
+  "version": 1,
+  "queries": [
+    {
+      "id": "search-antalya",
+      "op": "search",
+      "query": "Antalya",
+      "country": "TR",
+      "limit": 20,
+      "why": "exact and prefix matches with different levels; the province and the city share a name"
+    },
+    {
+      "id": "search-istanbul-dotless-i",
+      "op": "search",
+      "query": "Istanbul",
+      "country": "TR",
+      "limit": 20,
+      "why": "Turkish dotted/dotless I folding, normalization section 8's headline case"
+    },
+    {
+      "id": "search-istanbul-dotted-i",
+      "op": "search",
+      "query": "İstanbul",
+      "country": "TR",
+      "limit": 20,
+      "why": "the same place from the other spelling; must reach an identical result set"
+    },
+    {
+      "id": "search-constantinople",
+      "op": "search",
+      "query": "Constantinople",
+      "country": "TR",
+      "limit": 10,
+      "why": "a historic name from place_alternate_names; reaches Istanbul through the index"
+    },
+    {
+      "id": "search-byzantion",
+      "op": "search",
+      "query": "Byzantion",
+      "country": "TR",
+      "limit": 10,
+      "why": "the German historic name; a different script and length through the same index"
+    },
+    {
+      "id": "search-katakana-istanbul",
+      "op": "search",
+      "query": "イスタンブール",
+      "country": "TR",
+      "limit": 10,
+      "why": "a Japanese exonym in the Turkish package; dakuten must survive normalization"
+    },
+    {
+      "id": "search-two-char-cjk",
+      "op": "search",
+      "query": "東京",
+      "country": "JP",
+      "limit": 10,
+      "why": "documented limitation: below the trigram floor, so it returns nothing. Asserted so the limitation cannot be silently 'fixed' into a scan"
+    },
+    {
+      "id": "search-three-char-cjk",
+      "op": "search",
+      "query": "東京都",
+      "country": "JP",
+      "limit": 10,
+      "why": "three characters, so the trigram index serves it"
+    },
+    {
+      "id": "search-prefix-only",
+      "op": "search",
+      "query": "Muratpaşa",
+      "country": "TR",
+      "limit": 20,
+      "why": "the everyday form, with the Turkish ş; normalization section 8"
+    },
+    {
+      "id": "search-nonexistent",
+      "op": "search",
+      "query": "zzzzqqqqxxxx",
+      "country": "TR",
+      "limit": 10,
+      "why": "an empty result set must be empty in every implementation, not an error"
+    },
+    {
+      "id": "searchcity-antalya",
+      "op": "searchCity",
+      "query": "Antalya",
+      "country": "TR",
+      "limit": 10,
+      "why": "type filtering: the province must not appear"
+    },
+    {
+      "id": "country-tr",
+      "op": "country",
+      "country": "TR",
+      "why": "the display name is Türkiye, not GeoNames' English Turkey"
+    },
+    {
+      "id": "country-de",
+      "op": "country",
+      "country": "DE",
+      "why": "Deutschland, and the capital is resolved"
+    },
+    {
+      "id": "country-ge",
+      "op": "country",
+      "country": "GE",
+      "why": "Georgian script display name"
+    },
+    {
+      "id": "country-jp",
+      "op": "country",
+      "country": "JP",
+      "why": "日本; also a package whose postal data exists despite the spec's assumption otherwise"
+    },
+    {
+      "id": "postal-single-area",
+      "op": "postalCode",
+      "code": "06160",
+      "country": "TR",
+      "why": "a code covering one place"
+    },
+    {
+      "id": "postal-multi-area",
+      "op": "postalCode",
+      "code": "07160",
+      "country": "TR",
+      "why": "a code covering a district AND its city; areas must be a list and order must be stable"
+    },
+    {
+      "id": "postal-by-city",
+      "op": "postalCodes",
+      "country": "TR",
+      "city": "Antalya",
+      "limit": 50,
+      "why": "the reverse direction, spec section 18"
+    },
+    {
+      "id": "nearest-antalya",
+      "op": "nearest",
+      "latitude": 36.8969,
+      "longitude": 30.7133,
+      "country": "TR",
+      "limit": 10,
+      "why": "haversine ordering computed in SDK code, from R*Tree candidates"
+    },
+    {
+      "id": "autocomplete-antalya",
+      "op": "autocomplete",
+      "query": "Antalya",
+      "country": "TR",
+      "limit": 10,
+      "why": "capped at 50 and never unbounded"
+    },
+    {
+      "id": "ancestors-province",
+      "op": "ancestors",
+      "country": "TR",
+      "place": "admin:TR-07",
+      "why": "a level-2 area: ancestors are [province, country]"
+    },
+    {
+      "id": "ancestors-settlement",
+      "op": "ancestors",
+      "country": "TR",
+      "place": "firstCity",
+      "why": "a settlement under a province and country: three levels deep, zero recursive queries"
+    },
+    {
+      "id": "children-of-city",
+      "op": "children",
+      "country": "TR",
+      "place": "firstCity",
+      "limit": 20,
+      "why": "keyset pagination ordering, which is name-then-id"
+    },
+    {
+      "id": "localized-tr-japanese",
+      "op": "localizedName",
+      "country": "TR",
+      "place": "country",
+      "language": "ja",
+      "why": "cross-language lookup: イスタンブール"
+    },
+    {
+      "id": "localized-tr-turkish",
+      "op": "localizedName",
+      "country": "TR",
+      "place": "country",
+      "language": "tr",
+      "why": "the everyday short form, not the formal Republic of Türkiye"
+    },
+    {
+      "id": "localized-tr-german",
+      "op": "localizedName",
+      "country": "TR",
+      "place": "country",
+      "language": "de",
+      "why": "Türkei"
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 # TerraKit SDK Specification
 
-Status: **Draft — surface defined, not implemented**
-Last updated: 2026-10-05
+Status: **Swift implemented and conformance-tested; Kotlin pending**
+Last updated: 2026-10-08
 Targets: Swift (SPM) and Kotlin (Gradle, JVM + Android)
 
 Both SDKs expose the **same API in the same shape**. A feature added to one and

@@ -177,84 +177,65 @@ pub fn search(
     let mut results: Vec<SearchResult> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    let mut type_filter = if options.types.is_empty() {
-        String::new()
-    } else {
-        let placeholders = vec!["?"; options.types.len()].join(",");
-        format!(" AND p.type IN ({placeholders})")
-    };
+    // Parameter numbering is explicit and contiguous.
+    //
+    // SQLite assigns bare `?` the next free number in order of appearance, so mixing `?1`, `?2`
+    // and unnamed placeholders silently collides: `--country` together with `--type` produced
+    // "Wrong number of parameters passed to query" and returned nothing at all. The conformance
+    // battery found it; a hand-written spot check would not have.
+    //
+    // Numbers are handed out only to filters that are actually present, because SQLite requires
+    // the set to be contiguous -- leaving a gap for an absent `--country` makes it report "needed
+    // 5" against 4 bound values.
+    let mut type_filter = String::new();
+    let mut extra_bindings: Vec<rusqlite::types::Value> = Vec::new();
+    let mut next_slot = 2;
 
-    // --city, per SPEC section 18's `postalCodes(country:city:)`. Resolved
-    // through the closure table so it accepts a city, a district or a province:
-    // "places inside Antalya" is the useful meaning, and resolving one
-    // normalized name would make the flag brittle about which level the user
-    // named.
-    // --country is applied here as well as at the package level in main.rs. The
-    // package filter avoids opening files that cannot match; the SQL filter makes
-    // this function correct when called directly, which is how the cross-SDK
-    // conformance suite will call it.
-    let mut country_param: Option<String> = None;
     if let Some(country) = options.country.as_ref().filter(|c| !c.trim().is_empty()) {
-        country_param = Some(country.to_uppercase());
-        type_filter.push_str(" AND p.country_iso2 = ?COUNTRY");
+        type_filter.push_str(&format!(" AND p.country_iso2 = ?{next_slot}"));
+        extra_bindings.push(rusqlite::types::Value::Text(country.to_uppercase()));
+        next_slot += 1;
     }
 
-    let mut city_param: Option<String> = None;
+    // --city, per SPEC section 18's `postalCodes(country:city:)`. Resolved through the closure
+    // table so it accepts a city, a district or a province: "places inside Antalya" is the useful
+    // meaning, and resolving one normalized name would make the flag brittle about which level
+    // the user named.
     if let Some(city) = options.city.as_ref().filter(|c| !c.trim().is_empty()) {
-        let normalized = normalize(city);
-        city_param = Some(normalized.clone());
-        type_filter.push_str(
+        type_filter.push_str(&format!(
             " AND p.id IN (SELECT c.descendant_id FROM place_closure c \
              JOIN places q ON q.id = c.descendant_id \
-             WHERE q.name_norm = ?1 AND q.level >= 3)",
-        );
+             WHERE q.name_norm = ?{next_slot} AND q.level >= 3)"
+        ));
+        extra_bindings.push(rusqlite::types::Value::Text(normalize(city)));
+        next_slot += 1;
     }
 
-    // Parameter values per query: the search key, then any extra filter, then the
-    // type list. Order matters and must match the placeholder order in each SQL
-    // string above.
-    // rusqlite's positional binding has no named placeholders, so ?COUNTRY / ?CITY
-    // in the SQL above are rewritten to ?2 / ?3 here. Written this way the SQL
-    // reads as intent rather than as a count, and the count cannot silently drift
-    // out of sync with the binder when a filter is added.
-    //
-    // The binder binds only the placeholders the SQL actually contains. An earlier
-    // version always passed three values and every unfiltered search failed with
-    // "Wrong number of parameters passed to query. Got 2, needed 1" — which is
-    // what a positional binder looks like when the SQL and the values disagree,
-    // and a good reminder to derive one from the other rather than track both.
-    let rewrite_placeholders = |sql: &str| -> String {
-        sql.replace("?COUNTRY", "?2").replace("?CITY", "?3")
-    };
-
-    let binds_country = country_param.is_some();
-    let binds_city = city_param.is_some();
+    if !options.types.is_empty() {
+        let mut placeholders = Vec::with_capacity(options.types.len());
+        for value in &options.types {
+            placeholders.push(format!("?{next_slot}"));
+            extra_bindings.push(rusqlite::types::Value::Text(value.clone()));
+            next_slot += 1;
+        }
+        type_filter.push_str(&format!(" AND p.type IN ({})", placeholders.join(",")));
+    }
 
     let base_params = |value: String| -> Vec<rusqlite::types::Value> {
         let mut out = vec![rusqlite::types::Value::Text(value)];
-        if binds_country {
-            out.push(rusqlite::types::Value::Text(
-                country_param.clone().unwrap_or_default(),
-            ));
-        }
-        if binds_city {
-            out.push(rusqlite::types::Value::Text(
-                city_param.clone().unwrap_or_default(),
-            ));
-        }
+        out.extend(extra_bindings.clone());
         out
     };
 
     // --- 1. exact ----------------------------------------------------------
-    let exact_sql = rewrite_placeholders(&format!(
+    let exact_sql = format!(
         "SELECT {SELECT_PLACE} FROM places p \
-         WHERE p.name_norm = ?{type_filter} \
+         WHERE p.name_norm = ?1{type_filter} \
          ORDER BY p.search_rank DESC, p.id ASC"
-    ));
+    );
     collect(
         conn,
         &exact_sql,
-        &options.types,
         &base_params(query.clone()),
         MatchKind::Exact,
         &mut results,
@@ -264,18 +245,17 @@ pub fn search(
 
     // --- 2. prefix ---------------------------------------------------------
     if results.len() < limit {
-        let prefix_sql = rewrite_placeholders(&format!(
+        let prefix_sql = format!(
             "SELECT {SELECT_PLACE} FROM places p \
-             WHERE p.name_norm LIKE ? ESCAPE '\\'{type_filter} \
+             WHERE p.name_norm LIKE ?1 ESCAPE '\\'{type_filter} \
              ORDER BY p.search_rank DESC, p.id ASC"
-        ));
+        );
         // The wildcard is escaped so a user typing `%` searches for a literal
         // per cent sign rather than turning the query into a full scan.
         let pattern = format!("{}%", escape_like(&query));
         collect(
             conn,
             &prefix_sql,
-            &options.types,
             &base_params(pattern),
             MatchKind::Prefix,
             &mut results,
@@ -293,19 +273,18 @@ pub fn search(
     // while `search("東京")` does not, because Japanese place names are routinely
     // two characters. See DATA_MODEL.md section 9.
     if results.len() < limit && query.chars().count() >= SEARCH_KEY_MIN_LENGTH {
-        let fuzzy_sql = rewrite_placeholders(&format!(
+        let fuzzy_sql = format!(
             "SELECT {SELECT_PLACE}, f.name_norm AS matched_key \
              FROM search_fts f JOIN places p ON p.id = f.place_id \
-             WHERE search_fts MATCH ?{type_filter} \
+             WHERE search_fts MATCH ?1{type_filter} \
              ORDER BY p.search_rank DESC, p.id ASC"
-        ));
+        );
         // The query is passed as a quoted FTS5 string. An unquoted term is FTS5
         // query syntax, so a user typing `OR` or `*` would change the query
         // rather than search for a word.
         collect(
             conn,
             &fuzzy_sql,
-            &options.types,
             &base_params(fts5_quote(&query)),
             MatchKind::Fuzzy,
             &mut results,
@@ -357,10 +336,14 @@ fn sort_total(results: &mut [SearchResult]) {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Run one search query and append its rows.
+///
+/// `params` must be in placeholder order: the search key, then country, then city, then the type
+/// list — the numbering `search` assigns. Every value the SQL contains is bound from here, so the
+/// two cannot drift apart, which is the failure the previous scheme had.
 fn collect(
     conn: &Connection,
     sql: &str,
-    types: &[String],
     params: &[rusqlite::types::Value],
     kind: MatchKind,
     results: &mut Vec<SearchResult>,
@@ -375,9 +358,8 @@ fn collect(
         }
     };
 
-    let mut bound: Vec<&dyn rusqlite::ToSql> =
+    let bound: Vec<&dyn rusqlite::ToSql> =
         params.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
-    bound.extend(types.iter().map(|t| t as &dyn rusqlite::ToSql));
 
     let rows = statement.query_map(bound.as_slice(), |row| {
         let mut result = row_to_result(row)?;
@@ -558,6 +540,8 @@ fn total(conn: &Connection, sql: &str) -> i64 {
 pub struct PostalHit {
     pub code: String,
     pub place_name: Option<String>,
+    /// The primary place's id. Carried beside the name so JSON consumers compare ids.
+    pub place_id: Option<String>,
     pub place_type: Option<String>,
     pub latitude: Option<f64>,
     pub longitude: Option<f64>,
@@ -584,10 +568,12 @@ pub fn postal_code(conn: &Connection, country: &str, raw: &str) -> Result<Postal
                     .ok()
                 });
                 let place_name = resolved.as_ref().map(|(name, _)| name.clone());
+                let place_id = resolved.as_ref().map(|(name, _)| name.clone());
                 let place_type = resolved.map(|(_, kind)| kind);
                 Ok(PostalHit {
                     code: row.get(0)?,
                     place_name,
+                    place_id,
                     place_type,
                     latitude: row.get(2)?,
                     longitude: row.get(3)?,

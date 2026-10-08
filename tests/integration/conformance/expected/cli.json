@@ -1,0 +1,210 @@
+{
+  "$comment": "Produced by tools/conformance.py from the Rust CLI, which is the reference implementation. Regenerate with --generate only when a change to ordering is intended: regenerating to make a test pass would destroy the only thing the suite exists to check. See CONTRIBUTING.md section 5.1.",
+  "batteryVersion": 1,
+  "packages": [
+    "terrakit-data-de-2026.10.1+a6c3",
+    "terrakit-data-ge-2026.11.0+f00d",
+    "terrakit-data-jp-2026.10.1+a88a",
+    "terrakit-data-tr-2026.10.1+9920"
+  ],
+  "results": {
+    "ancestors-province": {
+      "ids": [],
+      "unavailable": "no CLI equivalent for 'ancestors'",
+      "why": "a level-2 area: ancestors are [province, country]"
+    },
+    "ancestors-settlement": {
+      "ids": [],
+      "unavailable": "no CLI equivalent for 'ancestors'",
+      "why": "a settlement under a province and country: three levels deep, zero recursive queries"
+    },
+    "autocomplete-antalya": {
+      "ids": [],
+      "unavailable": "no CLI equivalent for 'autocomplete'",
+      "why": "capped at 50 and never unbounded"
+    },
+    "children-of-city": {
+      "ids": [],
+      "unavailable": "no CLI equivalent for 'children'",
+      "why": "keyset pagination ordering, which is name-then-id"
+    },
+    "country-de": {
+      "fields": {
+        "capital": "Berlin",
+        "currency": "EUR",
+        "drivingSide": "right",
+        "iso2": "DE",
+        "iso3": "DEU",
+        "level": "postal",
+        "name": "Deutschland",
+        "places": 11957
+      },
+      "why": "Deutschland, and the capital is resolved"
+    },
+    "country-ge": {
+      "fields": {
+        "capital": "Tbilisi",
+        "currency": "GEL",
+        "drivingSide": null,
+        "iso2": "GE",
+        "iso3": "GEO",
+        "level": "cities",
+        "name": "\u10e1\u10d0\u10e5\u10d0\u10e0\u10d7\u10d5\u10d4\u10da\u10dd",
+        "places": 315
+      },
+      "why": "Georgian script display name"
+    },
+    "country-jp": {
+      "fields": {
+        "capital": "Tokyo",
+        "currency": "JPY",
+        "drivingSide": "left",
+        "iso2": "JP",
+        "iso3": "JPN",
+        "level": "postal",
+        "name": "\u65e5\u672c",
+        "places": 3428
+      },
+      "why": "\u65e5\u672c; also a package whose postal data exists despite the spec's assumption otherwise"
+    },
+    "country-tr": {
+      "fields": {
+        "capital": "Ankara",
+        "currency": "TRY",
+        "drivingSide": "right",
+        "iso2": "TR",
+        "iso3": "TUR",
+        "level": "postal",
+        "name": "T\u00fcrkiye",
+        "places": 5091
+      },
+      "why": "the display name is T\u00fcrkiye, not GeoNames' English Turkey"
+    },
+    "localized-tr-german": {
+      "ids": [],
+      "unavailable": "no CLI equivalent for 'localizedName'",
+      "why": "T\u00fcrkei"
+    },
+    "localized-tr-japanese": {
+      "ids": [],
+      "unavailable": "no CLI equivalent for 'localizedName'",
+      "why": "cross-language lookup: \u30a4\u30b9\u30bf\u30f3\u30d6\u30fc\u30eb"
+    },
+    "localized-tr-turkish": {
+      "ids": [],
+      "unavailable": "no CLI equivalent for 'localizedName'",
+      "why": "the everyday short form, not the formal Republic of T\u00fcrkiye"
+    },
+    "nearest-antalya": {
+      "ids": [],
+      "unavailable": "the CLI exposes no nearest query",
+      "why": "haversine ordering computed in SDK code, from R*Tree candidates"
+    },
+    "postal-by-city": {
+      "ids": [],
+      "unavailable": "no CLI equivalent for 'postalCodes'",
+      "why": "the reverse direction, spec section 18"
+    },
+    "postal-multi-area": {
+      "fields": {
+        "areaCount": 2,
+        "code": "07160",
+        "country": "TR",
+        "primary": "Muratpa\u015fa \u0130l\u00e7esi"
+      },
+      "ids": [
+        "place:geonames:9535335",
+        "admin:TR-07"
+      ],
+      "names": [
+        "Muratpa\u015fa \u0130l\u00e7esi",
+        "Antalya"
+      ],
+      "why": "a code covering a district AND its city; areas must be a list and order must be stable"
+    },
+    "postal-single-area": {
+      "fields": {
+        "areaCount": 1,
+        "code": "06160",
+        "country": "TR",
+        "primary": "Ankara"
+      },
+      "ids": [
+        "admin:TR-68"
+      ],
+      "names": [
+        "Ankara"
+      ],
+      "why": "a code covering one place"
+    },
+    "search-antalya": {
+      "ids": [
+        "admin:TR-07",
+        "place:geonames:323777"
+      ],
+      "why": "exact and prefix matches with different levels; the province and the city share a name"
+    },
+    "search-byzantion": {
+      "ids": [
+        "place:geonames:745044"
+      ],
+      "why": "the German historic name; a different script and length through the same index"
+    },
+    "search-constantinople": {
+      "ids": [
+        "place:geonames:745044"
+      ],
+      "why": "a historic name from place_alternate_names; reaches Istanbul through the index"
+    },
+    "search-istanbul-dotless-i": {
+      "ids": [
+        "admin:TR-34",
+        "place:geonames:745044"
+      ],
+      "why": "Turkish dotted/dotless I folding, normalization section 8's headline case"
+    },
+    "search-istanbul-dotted-i": {
+      "ids": [
+        "admin:TR-34",
+        "place:geonames:745044"
+      ],
+      "why": "the same place from the other spelling; must reach an identical result set"
+    },
+    "search-katakana-istanbul": {
+      "ids": [
+        "admin:TR-34",
+        "place:geonames:745044"
+      ],
+      "why": "a Japanese exonym in the Turkish package; dakuten must survive normalization"
+    },
+    "search-nonexistent": {
+      "ids": [],
+      "why": "an empty result set must be empty in every implementation, not an error"
+    },
+    "search-prefix-only": {
+      "ids": [
+        "place:geonames:8074174",
+        "place:geonames:9535335"
+      ],
+      "why": "the everyday form, with the Turkish \u015f; normalization section 8"
+    },
+    "search-three-char-cjk": {
+      "ids": [
+        "place:geonames:1850147",
+        "admin:JP-40",
+        "place:geonames:1864487"
+      ],
+      "why": "three characters, so the trigram index serves it"
+    },
+    "search-two-char-cjk": {
+      "ids": [],
+      "why": "documented limitation: below the trigram floor, so it returns nothing. Asserted so the limitation cannot be silently 'fixed' into a scan"
+    },
+    "searchcity-antalya": {
+      "ids": [
+        "place:geonames:323777"
+      ],
+      "why": "type filtering: the province must not appear"
+    }
+  }
+}

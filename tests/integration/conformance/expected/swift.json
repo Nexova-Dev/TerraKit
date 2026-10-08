@@ -1,0 +1,42 @@
+{
+  "$comment" : "Produced by the Swift SDK for the queries the CLI does not expose (SDK_SPEC.md section 14). Kotlin is held to these. If a change here is intended, delete the file deliberately -- do not let a test run rewrite it.",
+  "results" : {
+    "ancestors-province" : [
+      "country:TR",
+      "admin:TR-07"
+    ],
+    "ancestors-settlement" : [
+      "country:TR",
+      "admin:TR-81",
+      "place:geonames:325363"
+    ],
+    "autocomplete-antalya" : [
+      "admin:TR-07",
+      "place:geonames:323777"
+    ],
+    "children-of-city" : [
+
+    ],
+    "localized-tr-german" : [
+      "Türkei"
+    ],
+    "localized-tr-japanese" : [
+      "トルコ"
+    ],
+    "localized-tr-turkish" : [
+      "Türkiye"
+    ],
+    "nearest-antalya" : [
+      "admin:TR-07",
+      "place:geonames:323777",
+      "place:geonames:10377367",
+      "place:geonames:8074152",
+      "place:geonames:8074174",
+      "place:geonames:9535335",
+      "place:geonames:8073969",
+      "place:geonames:306570",
+      "place:geonames:316240",
+      "place:geonames:298091"
+    ]
+  }
+}

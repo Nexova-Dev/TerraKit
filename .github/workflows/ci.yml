@@ -59,6 +59,61 @@ jobs:
         # publishes no postal file for it.
         run: ./scripts/check_reproducible.sh GE --level postal --download
 
+  swift-sdk:
+    name: Swift SDK + cross-SDK conformance
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Report the toolchain
+        # Recorded rather than assumed: SDK_SPEC.md section 1.6 requires libsqlite3 and nothing
+        # else, and a build that silently started vendoring a package manager would defeat it.
+        run: |
+          swift --version
+          swift -e 'import SQLite3; print("SQLite3 module available")'
+
+      - name: Normalization conformance
+        # Needs no packages, so it is the half that must pass on every push. It is what proves the
+        # SDK agrees with core/spec/normalization.md rather than merely resembling it.
+        run: cd sdk/swift && swift test --filter Normalization
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Build the packages the battery names
+        # TR, DE and JP, because the battery queries a Turkish province, a German capital and a
+        # Japanese prefecture -- including the CJK case where the trigram floor is visible. The
+        # cross-SDK comparison is worthless against a subset, so all three are built.
+        run: |
+          set -euo pipefail
+          for COUNTRY in TR DE JP; do
+            echo "::group::$COUNTRY"
+            PYTHONPATH=data-pipeline/src python3 -m terrakit_pipeline build \
+              "$COUNTRY" \
+              --level postal \
+              --out "$PWD/.ci-datasets" \
+              --repo-root "$PWD"
+            echo "::endgroup::"
+          done
+
+      - name: Record the CLI's expectations, then check the CLI against them
+        # The Rust CLI is the reference implementation, so the expectations are produced by it and
+        # immediately verified against itself. That catches a battery that has drifted away from
+        # the CLI before the Swift result is compared to anything.
+        run: |
+          set -euo pipefail
+          cargo build --manifest-path cli/Cargo.toml --release --quiet
+          python3 tools/conformance.py generate --packages .ci-datasets
+          python3 tools/conformance.py check --packages .ci-datasets
+
+      - name: Swift SDK conformance against the same package bytes
+        # SDK_SPEC.md section 14: same battery, same bytes, compared on ID sequences and orderings
+        # rather than counts.
+        env:
+          TERRAKIT_CONFORMANCE_PACKAGES: ${{ github.workspace }}/.ci-datasets
+        run: cd sdk/swift && swift test
+
   package-validation:
     name: MVP package validation
     runs-on: ubuntu-latest

@@ -70,6 +70,36 @@ else
   printf '\n\033[1m=== Rust CLI\033[0m\n  SKIPPED: cargo not found\n'
 fi
 
+# The Swift SDK. Two halves, because they have different prerequisites:
+#
+#   * the normalization suite needs nothing but the source tree, so it always runs. It is what
+#     proves the SDK compiles and agrees with `core/spec/normalization.md` on every push.
+#   * the cross-SDK battery needs built packages, so it runs only when some are handed to it and
+#     says so otherwise.
+#
+# `swift` is absent on a Linux box without a toolchain; skipping is stated, never silent.
+if command -v swift >/dev/null 2>&1; then
+  # `bash -c` rather than `env -C`: `env -C` is GNU/FreeBSD and is not present on every macOS
+  # this has to run on, and a test runner that fails because of a flag difference is worse than
+  # one extra shell.
+  run_suite "Swift SDK (normalization conformance)" \
+    bash -c 'cd sdk/swift && swift test --filter Normalization'
+
+  if [[ -n "${TERRAKIT_CONFORMANCE_PACKAGES:-}" ]] && \
+     [[ -d "${TERRAKIT_CONFORMANCE_PACKAGES}" ]]; then
+    run_suite "Swift SDK (cross-SDK conformance)" \
+      bash -c "cd sdk/swift && \
+        TERRAKIT_CONFORMANCE_PACKAGES='$TERRAKIT_CONFORMANCE_PACKAGES' swift test"
+  else
+    printf '\n\033[1m=== Swift SDK (cross-SDK conformance)\033[0m\n'
+    printf '  SKIPPED: need built packages\n'
+    printf '  TERRAKIT_CONFORMANCE_PACKAGES=<datasets> bash scripts/test.sh\n'
+  fi
+else
+  printf '\n\033[1m=== Swift SDK\033[0m\n'
+  printf '  SKIPPED: swift not found (macOS ships it; Linux needs a toolchain)\n'
+fi
+
 printf '\n\033[1m=== summary\033[0m\n'
 for suite in "${PASSED[@]:-}"; do
   [[ -n "$suite" ]] && printf '  \033[32mPASS\033[0m %s\n' "$suite"

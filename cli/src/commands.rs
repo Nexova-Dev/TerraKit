@@ -463,15 +463,22 @@ pub fn postal(project: &Project, country: &str, code: &str, out_format: Format) 
                 .iter()
                 .map(|(name, _)| jstr(name))
                 .collect();
+            // Ids alongside names. The cross-SDK conformance suite compares result ID sequences
+            // rather than counts (SDK_SPEC.md section 14), and a name is a weaker key than an id:
+            // two districts can share a name, and a comparison on names would treat them as one
+            // result and pass when the orderings differ.
+            let area_ids: Vec<String> = hit.areas.iter().map(|(_, id)| jstr(id)).collect();
             emit(&format!(
-                "{{\"code\":{},\"country\":{},\"place\":{},\"latitude\":{},\"longitude\":{},\
-                 \"areas\":[{}],\"areaCount\":{}}}",
+                "{{\"code\":{},\"country\":{},\"place\":{},\"placeId\":{},\"latitude\":{},\"longitude\":{},\
+                 \"areas\":[{}],\"areaIds\":[{}],\"areaCount\":{}}}",
                 jstr(&hit.code),
                 jstr(&country.to_uppercase()),
                 jstr_opt(&hit.place_name),
+                jstr_opt(&hit.place_id),
                 hit.latitude.map(|v| v.to_string()).unwrap_or("null".into()),
                 hit.longitude.map(|v| v.to_string()).unwrap_or("null".into()),
                 areas.join(","),
+                area_ids.join(","),
                 hit.areas.len()
             ));
         }
