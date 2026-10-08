@@ -69,8 +69,8 @@ Follow it. Work out of sequence creates work for everyone else.
 6. cli/                  cache, bundle                                       done
 7. cli/                  install from a GitHub source                        done
 8. sdk/swift/            query engine over the produced package               done
-9. sdk/kotlin/           same surface, conformance-tested against Swift     next
-10. Remaining countries  US, GB — plus JP in the test set
+9. sdk/kotlin/           same surface, conformance-tested against Swift     done
+10. Remaining countries  US, GB                                            next
 11. search depth         autocomplete ranking, boundary polygons
 ```
 

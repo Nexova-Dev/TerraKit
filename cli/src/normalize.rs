@@ -34,7 +34,9 @@ const SPECIAL_CASES: &[(char, &str)] = &[
     ('ß', "ss"),
     ('ẞ', "ss"),
     ('æ', "ae"),
+    ('Æ', "ae"),
     ('ǽ', "ae"),
+    ('Ǽ', "ae"),
     ('œ', "oe"),
     ('Œ', "oe"),
     ('ø', "o"),
@@ -60,6 +62,7 @@ const SPECIAL_CASES: &[(char, &str)] = &[
     ('ŧ', "t"),
     ('Ŧ', "t"),
     ('ə', "e"),
+    ('Ə', "e"),
     // Soft hyphen U+00AD: survives NFKD and case folding, is invisible, and is
     // commonly embedded in text pasted from word processors and PDFs. Removing it
     // is not cosmetic — it silently breaks lookups.

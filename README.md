@@ -39,6 +39,9 @@ println(antalya.type)                          // PlaceType.CITY
 println(antalya.timezoneId)                    // Europe/Istanbul
 println(antalya.ancestors.map { it.name })     // [Türkiye, Antalya, Antalya]
 println(antalya.localizedName(Language.ENGLISH)) // Antalya
+
+// On Android, copy the packages out of the APK first -- see ADR-008.
+Terra.configure(AssetInstaller.install(context, "terrakit"))
 ```
 
 No API key. No network call. No geographic database to build and maintain.
@@ -61,8 +64,8 @@ No API key. No network call. No geographic database to build and maintain.
 | Localized / exonym / historic names | **working** — 19.2 M upstream rows, streamed |
 | Rust CLI | **working** — query commands plus `add`, `remove`, `update`, `cache`, `bundle` |
 | Registry | **working** — static `index.json` on object storage, Ed25519-signed releases |
-| Swift SDK | built, 23 tests, cross-SDK conformance against the CLI |
-| Kotlin SDK | specified ([`SDK_SPEC.md`](SDK_SPEC.md)), not built |
+| Swift SDK | built, 25 tests, conformance against the CLI |
+| Kotlin SDK | built (JVM + Android), 41 tests, conformance against CLI **and** Swift |
 | Registry | static layout specified, not hosted |
 
 ### Packages built from live data

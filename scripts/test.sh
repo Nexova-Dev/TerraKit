@@ -79,25 +79,61 @@ fi
 #
 # `swift` is absent on a Linux box without a toolchain; skipping is stated, never silent.
 if command -v swift >/dev/null 2>&1; then
+  # The SQLite3 module is part of Apple's toolchain and is not guaranteed elsewhere. Checked, because
+  # the failure otherwise arrives as a compile error in the module that says nothing about why.
+  #
   # `bash -c` rather than `env -C`: `env -C` is GNU/FreeBSD and is not present on every macOS
   # this has to run on, and a test runner that fails because of a flag difference is worse than
   # one extra shell.
-  run_suite "Swift SDK (normalization conformance)" \
-    bash -c 'cd sdk/swift && swift test --filter Normalization'
+  if swift -e 'import SQLite3' >/dev/null 2>&1; then
+    run_suite "Swift SDK (normalization conformance)" \
+      bash -c 'cd sdk/swift && swift test --filter Normalization'
 
+  # The cross-SDK battery needs built packages. It is run for **both** SDKs, and separately, because
+  # each is held to a different oracle: Swift against the CLI, Kotlin against the CLI *and* Swift.
+  # A suite that ran only one would leave the other unverified while looking complete.
   if [[ -n "${TERRAKIT_CONFORMANCE_PACKAGES:-}" ]] && \
      [[ -d "${TERRAKIT_CONFORMANCE_PACKAGES}" ]]; then
     run_suite "Swift SDK (cross-SDK conformance)" \
       bash -c "cd sdk/swift && \
         TERRAKIT_CONFORMANCE_PACKAGES='$TERRAKIT_CONFORMANCE_PACKAGES' swift test"
   else
-    printf '\n\033[1m=== Swift SDK (cross-SDK conformance)\033[0m\n'
-    printf '  SKIPPED: need built packages\n'
-    printf '  TERRAKIT_CONFORMANCE_PACKAGES=<datasets> bash scripts/test.sh\n'
+      printf '\n\033[1m=== Swift SDK (cross-SDK conformance)\033[0m\n'
+      printf '  SKIPPED: need built packages\n'
+      printf '  TERRAKIT_CONFORMANCE_PACKAGES=<datasets> bash scripts/test.sh\n'
+    fi
+  else
+    printf '\n\033[1m=== Swift SDK\033[0m\n'
+    printf '  SKIPPED: this Swift toolchain has no SQLite3 module\n'
+    printf '  The Swift SDK targets Apple platforms; see scripts/test.sh and CI job `sdks`.\n'
   fi
 else
   printf '\n\033[1m=== Swift SDK\033[0m\n'
   printf '  SKIPPED: swift not found (macOS ships it; Linux needs a toolchain)\n'
+fi
+
+# The Kotlin SDK. The Gradle wrapper is committed, so this needs no local Gradle -- only a JDK.
+#
+# `jvmTest` is invoked rather than `check` so the Android variant is not built: it needs an SDK, and
+# ADR-008 makes it conditional for exactly that reason.
+if command -v java >/dev/null 2>&1; then
+  run_suite "Kotlin SDK (normalization conformance)" \
+    bash -c 'cd sdk/kotlin && ./gradlew jvmTest --tests "*Normalization*" --quiet'
+
+  if [[ -n "${TERRAKIT_CONFORMANCE_PACKAGES:-}" ]] && \
+     [[ -d "${TERRAKIT_CONFORMANCE_PACKAGES}" ]]; then
+    run_suite "Kotlin SDK (cross-SDK conformance)" \
+      bash -c "cd sdk/kotlin && \
+        TERRAKIT_CONFORMANCE_PACKAGES='$TERRAKIT_CONFORMANCE_PACKAGES' \
+        TERRAKIT_REPO_ROOT='$REPO_ROOT' ./gradlew crossSdkConformance --quiet"
+  else
+    printf '\n\033[1m=== Kotlin SDK (cross-SDK conformance)\033[0m\n'
+    printf '  SKIPPED: need built packages\n'
+    printf '  TERRAKIT_CONFORMANCE_PACKAGES=<datasets> bash scripts/test.sh\n'
+  fi
+else
+  printf '\n\033[1m=== Kotlin SDK\033[0m\n'
+  printf '  SKIPPED: java not found\n'
 fi
 
 printf '\n\033[1m=== summary\033[0m\n'

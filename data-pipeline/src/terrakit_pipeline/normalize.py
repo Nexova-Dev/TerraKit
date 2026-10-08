@@ -34,7 +34,9 @@ SPECIAL_CASES: dict[str, str] = {
     "ß": "ss",
     "ẞ": "ss",
     "æ": "ae",
+    "Æ": "ae",
     "ǽ": "ae",
+    "Ǽ": "ae",
     "œ": "oe",
     "Œ": "oe",
     "ø": "o",
@@ -59,6 +61,7 @@ SPECIAL_CASES: dict[str, str] = {
     "ŧ": "t",
     "Ŧ": "t",
     "ə": "e",
+    "Ə": "e",
     # Soft hyphen: survives NFKD and case folding, invisible, breaks lookups
     # in text pasted from word processors. Removed, not spaced.
     "­": "",

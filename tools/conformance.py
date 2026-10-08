@@ -121,16 +121,28 @@ def run_cli(project: pathlib.Path, query: dict) -> dict:
         return {"ids": [row["id"] for row in payload["results"]]}
 
     if operation == "country":
-        return {"fields": {
-            "iso2": payload["iso2"],
-            "iso3": payload["iso3"],
-            "name": payload["name"],
-            "capital": payload["capital"],
-            "currency": payload["currency"],
-            "drivingSide": payload["drivingSide"],
-            "level": payload["level"],
-            "places": payload["places"],
-        }}
+        # Emitted as `ids` like every other query, so one comparison covers all of them. These four
+        # were previously recorded under `fields`, which the SDK suites did not read -- so the country
+        # row was the one part of the surface that no SDK was actually verified on, and the suite
+        # reported full coverage while skipping it. A field-by-field list, in a fixed order, names the
+        # divergence instead of counting matches.
+        # Null becomes "-" rather than Python's "None", which would make the expected value depend
+        # on the language that generated it. Georgia has no driving side in the source data, and a
+        # suite whose oracle says "None" is a suite that Kotlin's `null` and Swift's `nil` can never
+        # match.
+        def token(value):
+            return "-" if value is None else str(value)
+
+        return {"ids": [
+            token(payload["iso2"]),
+            token(payload["iso3"]),
+            token(payload["name"]),
+            token(payload["capital"]),
+            token(payload["currency"]),
+            token(payload["drivingSide"]),
+            token(payload["level"]),
+            token(payload["places"]),
+        ]}
 
     if operation == "postalCode":
         # Ids, not names: a name is a weaker key than an id, and two districts can share one.

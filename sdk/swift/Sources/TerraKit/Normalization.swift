@@ -110,7 +110,7 @@ public enum Normalization {
         var table: [UnicodeScalar: String] = [
             // German sharp s: the capital is a distinct code point (U+1E9E).
             "\u{00DF}": "ss", "\u{1E9E}": "ss",
-            "\u{00E6}": "ae", "\u{01FD}": "ae",
+            "\u{00E6}": "ae", "\u{00C6}": "ae", "\u{01FD}": "ae", "\u{01FC}": "ae",
             "\u{0153}": "oe", "\u{0152}": "oe",
             "\u{00F8}": "o", "\u{00D8}": "o",
             "\u{0111}": "d", "\u{0110}": "d",
@@ -124,7 +124,7 @@ public enum Normalization {
             "\u{0127}": "h", "\u{0126}": "h",
             "\u{014B}": "ng", "\u{014A}": "ng",
             "\u{0167}": "t", "\u{0166}": "t",
-            "\u{0259}": "e",
+            "\u{0259}": "e", "\u{018F}": "e",
             // Soft hyphen U+00AD survives NFKD and case folding, is invisible, and is commonly
             // embedded in text pasted from word processors and PDFs. Removing it is not cosmetic —
             // it silently breaks lookups.

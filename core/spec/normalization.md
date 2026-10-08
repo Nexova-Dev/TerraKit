@@ -57,10 +57,18 @@ combining marks would otherwise survive step 6 as letters.
 
 Applied in the listed order after mark stripping and before case folding.
 
+**The table must list both cases of every letter.** Case folding runs *after* it, so an uppercase
+form that is missing folds down onto its lowercase counterpart and is substituted on the next pass:
+`Ærø` → `æro` → `aero`. That breaks idempotence, which the fixture enforces
+(`idempotenceCheck`), and idempotence is not cosmetic — the pipeline normalizes a name once when
+building `name_norm`, and a consumer may normalize a value it has already read back, or compose
+`normalize` with `searchKeyUnaccented`. Three uppercase forms were missing when the Kotlin SDK was
+written and the fixture's idempotence check found them: `Æ`, `Ǽ` and `Ə`.
+
 | Input (codepoints) | Output | Reason |
 |---|---|---|
 | `ß` U+00DF, `ẞ` U+1E9E | `ss` | German; the capital is a distinct code point |
-| `æ` U+00E6, `ǽ` U+01FD | `ae` | |
+| `æ` U+00E6, `Æ` U+00C6, `ǽ` U+01FD, `Ǽ` U+01FC | `ae` | |
 | `œ` U+0153, `Œ` U+0152 | `oe` | |
 | `ø` U+00F8, `Ø` U+00D8 | `o` | Danish, Norwegian |
 | `đ` U+0111, `Đ` U+0110 | `d` | Croatian, Vietnamese |
@@ -72,7 +80,7 @@ Applied in the listed order after mark stripping and before case folding.
 | `ħ` U+0127, `Ħ` U+0126 | `h` | Maltese |
 | `ŋ` U+014B, `Ŋ` U+014A | `ng` | |
 | `ŧ` U+0167, `Ŧ` U+0166 | `t` | |
-| `ə` U+0259 | `e` | Azerbaijani |
+| `ə` U+0259, `Ə` U+018F | `e` | Azerbaijani |
 | `­` U+00AD | *(removed)* | soft hyphen |
 | `‐` U+2010 … `‑` U+2011, `–` U+2013, `—` U+2014, `−` U+2212 | `-` | dashes and minus, then removed by step 6 |
 | `’` U+2019, `‘` U+2018, `` ` `` U+0060 | `'` | apostrophe variants, then removed by step 6 |

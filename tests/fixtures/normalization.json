@@ -1,7 +1,7 @@
 {
   "specification": "core/spec/normalization.md",
-  "specVersion": 1,
-  "note": "Oracle for cross-language conformance. Never edit a vector to make a failing test pass; see CONTRIBUTING.md section 5.1. Vectors 40-48 are a regression guard: stripping all combining marks destroyed Japanese kana with dakuten.",
+  "specVersion": 2,
+  "note": "Oracle for cross-language conformance. Never edit a vector to make a failing test pass; see CONTRIBUTING.md section 5.1. Vectors 40-48 are a regression guard: stripping all combining marks destroyed Japanese kana with dakuten. Vectors 49-51 are a second guard, added at specVersion 2: the fixture's idempotence check found that the substitution table in core/spec/normalization.md section 3 listed U+00C6, U+01FC and U+018F only in their lowercase counterparts, so case folding produced a value the next pass substituted again. The specification was corrected and all four implementations with it; these vectors record the requirement rather than accommodate a failure.",
   "vectors": [
     {
       "n": 1,
@@ -290,6 +290,24 @@
       "input": "ガザ",
       "expected": "ガザ",
       "covers": "mid-string dakuten must not become a space, spec 6"
+    },
+    {
+      "n": 49,
+      "input": "Ærø",
+      "expected": "aero",
+      "covers": "spec 3, uppercase ligature; idempotence: folded to æ, which the table also maps"
+    },
+    {
+      "n": 50,
+      "input": "Ǽrø",
+      "expected": "aero",
+      "covers": "spec 3, uppercase AE with acute, same idempotence requirement"
+    },
+    {
+      "n": 51,
+      "input": "Əkir",
+      "expected": "ekir",
+      "covers": "spec 3, uppercase schwa, same idempotence requirement"
     }
   ],
   "idempotenceCheck": true,

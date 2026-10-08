@@ -29,55 +29,55 @@
       "why": "keyset pagination ordering, which is name-then-id"
     },
     "country-de": {
-      "fields": {
-        "capital": "Berlin",
-        "currency": "EUR",
-        "drivingSide": "right",
-        "iso2": "DE",
-        "iso3": "DEU",
-        "level": "postal",
-        "name": "Deutschland",
-        "places": 11957
-      },
+      "ids": [
+        "DE",
+        "DEU",
+        "Deutschland",
+        "Berlin",
+        "EUR",
+        "right",
+        "postal",
+        "11957"
+      ],
       "why": "Deutschland, and the capital is resolved"
     },
     "country-ge": {
-      "fields": {
-        "capital": "Tbilisi",
-        "currency": "GEL",
-        "drivingSide": null,
-        "iso2": "GE",
-        "iso3": "GEO",
-        "level": "cities",
-        "name": "\u10e1\u10d0\u10e5\u10d0\u10e0\u10d7\u10d5\u10d4\u10da\u10dd",
-        "places": 315
-      },
+      "ids": [
+        "GE",
+        "GEO",
+        "\u10e1\u10d0\u10e5\u10d0\u10e0\u10d7\u10d5\u10d4\u10da\u10dd",
+        "Tbilisi",
+        "GEL",
+        "-",
+        "cities",
+        "315"
+      ],
       "why": "Georgian script display name"
     },
     "country-jp": {
-      "fields": {
-        "capital": "Tokyo",
-        "currency": "JPY",
-        "drivingSide": "left",
-        "iso2": "JP",
-        "iso3": "JPN",
-        "level": "postal",
-        "name": "\u65e5\u672c",
-        "places": 3428
-      },
+      "ids": [
+        "JP",
+        "JPN",
+        "\u65e5\u672c",
+        "Tokyo",
+        "JPY",
+        "left",
+        "postal",
+        "3428"
+      ],
       "why": "\u65e5\u672c; also a package whose postal data exists despite the spec's assumption otherwise"
     },
     "country-tr": {
-      "fields": {
-        "capital": "Ankara",
-        "currency": "TRY",
-        "drivingSide": "right",
-        "iso2": "TR",
-        "iso3": "TUR",
-        "level": "postal",
-        "name": "T\u00fcrkiye",
-        "places": 5091
-      },
+      "ids": [
+        "TR",
+        "TUR",
+        "T\u00fcrkiye",
+        "Ankara",
+        "TRY",
+        "right",
+        "postal",
+        "5091"
+      ],
       "why": "the display name is T\u00fcrkiye, not GeoNames' English Turkey"
     },
     "localized-tr-german": {

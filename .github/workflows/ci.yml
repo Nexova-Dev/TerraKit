@@ -59,16 +59,28 @@ jobs:
         # publishes no postal file for it.
         run: ./scripts/check_reproducible.sh GE --level postal --download
 
-  swift-sdk:
-    name: Swift SDK + cross-SDK conformance
+  sdks:
+    # One job for both SDKs rather than two, because they need the same three built packages and the
+    # GeoNames downloads behind them. Splitting them would double the slowest part of CI to run the
+    # same setup twice.
+    name: SDK conformance (Swift + Kotlin)
+    # macOS, because the Swift SDK needs the `SQLite3` module and Apple's toolchain is the one known
+    # to ship it. On Linux `scripts/test.sh` checks for the module and skips the Swift suites with the
+    # reason printed rather than failing on a missing platform feature.
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
       - name: Report the toolchain
-        # Recorded rather than assumed: SDK_SPEC.md section 1.6 requires libsqlite3 and nothing
-        # else, and a build that silently started vendoring a package manager would defeat it.
+        # Recorded rather than assumed: SDK_SPEC.md section 1.6 allows only the platform's own SQLite
+        # binding, and a build that silently started vendoring a dependency manager would defeat it.
         run: |
+          java -version
           swift --version
           swift -e 'import SQLite3; print("SQLite3 module available")'
 
@@ -113,6 +125,18 @@ jobs:
         env:
           TERRAKIT_CONFORMANCE_PACKAGES: ${{ github.workspace }}/.ci-datasets
         run: cd sdk/swift && swift test
+
+      - name: Kotlin SDK conformance against the same package bytes
+        # A second oracle on top of the CLI's: Kotlin is held to the CLI *and* to Swift, which is the
+        # only thing that makes SDK_SPEC.md section 1 -- both SDKs expose the same API in the same
+        # shape -- testable rather than aspirational. ADR-008 makes the Android target conditional on
+        # an SDK being present, so this builds the JVM variant only and says so.
+        env:
+          TERRAKIT_CONFORMANCE_PACKAGES: ${{ github.workspace }}/.ci-datasets
+        run: |
+          cd sdk/kotlin
+          ./gradlew crossSdkConformance
+          echo "note: the Android target is not built here -- no Android SDK on this runner (ADR-008)"
 
   package-validation:
     name: MVP package validation

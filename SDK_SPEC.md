@@ -1,6 +1,6 @@
 # TerraKit SDK Specification
 
-Status: **Swift implemented and conformance-tested; Kotlin pending**
+Status: **Both SDKs implemented; all three implementations conformance-tested**
 Last updated: 2026-10-08
 Targets: Swift (SPM) and Kotlin (Gradle, JVM + Android)
 
@@ -24,8 +24,12 @@ These are not preferences. Each corresponds to a rule in
 4. **Errors are typed, not optional.** A missing package and an empty result are different
    outcomes and must not look alike.
 5. **IDs are opaque.** `String`, never parsed.
-6. **Zero third-party dependencies** beyond `libsqlite3` and the standard library
-   ([`ADR-003`](docs/adr/ADR-003-search-mechanisms.md), [`ADR-007`](docs/adr/ADR-007-language-stack.md)).
+6. **No third-party dependency beyond the platform's own SQLite binding and the standard library**
+   ([`ADR-003`](docs/adr/ADR-003-search-mechanisms.md), [`ADR-007`](docs/adr/ADR-007-language-stack.md),
+   [`ADR-008`](docs/adr/ADR-008-kotlin-sqlite-binding.md)). On Apple platforms that is `libsqlite3`;
+   on Android it is `android.database.sqlite`, in the platform; on the JVM it is `sqlite-jdbc`,
+   because the JDK ships no SQLite driver and claiming otherwise would only mean the dependency was
+   undiscovered. No ORM, no query builder, no serialization library, no HTTP client on any path.
 
 ---
 

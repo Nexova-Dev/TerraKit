@@ -176,15 +176,54 @@ final class ConformanceTests: XCTestCase {
 
         case "country":
             guard let country = try Terra.country(query.country ?? "") else { return [] }
-            // A field-by-field sequence, so a divergence names the field rather than dumping two
-            // structs a reader has to diff by eye.
-            return [country.iso2, country.iso3, country.name, country.capitalPlaceID ?? "-"]
+            // A field-by-field sequence in the order the CLI emits, so a divergence names the field
+            // rather than dumping two structs a reader has to diff by eye.
+            //
+            // The capital is the *name*, not the id: the CLI resolves it, and comparing an id against
+            // a name would fail on every country while saying nothing about the data. A missing value
+            // is "-" rather than "nil" or "None", because the expected value must not depend on the
+            // language that generated it — Georgia has no driving side in the source data.
+            let package = try Terra.shared().requirePackage(query.country ?? "")
+            var capitalName = "-"
+            if let capitalID = country.capitalPlaceID {
+                let resolved = try? package.database.first(
+                    "SELECT name FROM places WHERE id = ?1",
+                    bindings: [.text(capitalID)],
+                    map: { $0.string(0) ?? "" }
+                )
+                if let resolved, !resolved.isEmpty { capitalName = resolved }
+            }
+            let placeCount = try package.database.first(
+                "SELECT count(*) FROM places WHERE country_iso2 = ?1",
+                bindings: [.text(country.iso2)],
+                map: { $0.int(0) ?? 0 }
+            ) ?? 0
+            return [
+                country.iso2,
+                country.iso3,
+                country.name,
+                capitalName,
+                country.currencyCode,
+                country.drivingSide?.rawValue ?? "-",
+                package.level,
+                "\(placeCount)",
+            ]
 
         case "postalCode":
             guard let code = try Terra.postalCode(query.code ?? "", country: query.country) else {
                 return []
             }
             return code.areas.map(\.id)
+
+        case "postalCodes":
+            // Codes rather than area ids: this is the reverse direction -- every code covering a city --
+            // and the code is the identity here. It had no runner in either SDK, so a battery query was
+            // covered by nobody while the suite reported itself complete.
+            return try Terra.postalCodes(
+                country: query.country ?? "",
+                city: query.city,
+                limit: limit
+            ).map(\.code)
 
         case "nearest":
             guard let latitude = query.latitude, let longitude = query.longitude else { return [] }
@@ -241,8 +280,15 @@ final class ConformanceTests: XCTestCase {
                 failures.append("\(query.id): the CLI recorded no expectation for it")
                 continue
             }
-            guard expected.unavailable == nil, let want = expected.ids else {
+            if expected.unavailable != nil {
                 continue   // no CLI equivalent; covered by testSDKOnlyQueriesAreStable
+            }
+            guard let want = expected.ids else {
+                failures.append(
+                    "\(query.id): the CLI recorded no result ids. Every available query must "
+                        + "record them, or this suite skips it silently."
+                )
+                continue
             }
 
             let got = try run(query)
