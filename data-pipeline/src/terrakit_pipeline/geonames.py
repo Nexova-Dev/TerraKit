@@ -88,7 +88,7 @@ SOURCES: dict[str, SourceSpec] = {
     "postal": SourceSpec(
         id="geonames_postal",
         url="https://download.geonames.org/export/zip/{iso2}.zip",
-        filename="{iso2}.txt",
+        filename="{iso2}.zip",
         license="CC-BY-4.0",
         license_url="https://creativecommons.org/licenses/by/4.0/",
         attribution="GeoNames postal codes, CC BY 4.0",

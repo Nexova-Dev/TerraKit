@@ -454,7 +454,26 @@ pub fn postal(project: &Project, country: &str, code: &str, out_format: Format) 
         return Err(Exit::NotInstalled);
     };
     let conn = open_database(&package.database)?;
-    let hit = query::postal_code(&conn, country, code)?;
+
+    let Some(hit) = query::postal_code(&conn, country, code)? else {
+        // Both formats say so. Emitting nothing in `--json` mode was the defect: the contract is that
+        // stdout carries JSON and nothing else, and a not-found outcome is a result, not a silence.
+        // The exit code still distinguishes it, so a script can branch on either.
+        match out_format {
+            Format::Json => emit(&format!(
+                "{{\"found\":false,\"code\":{},\"country\":{},\"place\":null,\"placeId\":null,\
+                 \"latitude\":null,\"longitude\":null,\"areas\":[],\"areaIds\":[],\"areaCount\":0}}",
+                jstr(code),
+                jstr(&country.to_uppercase())
+            )),
+            Format::Human => eprintln!(
+                "terrakit: {} is not a postal code in {}.",
+                code,
+                country.to_uppercase()
+            ),
+        }
+        return Err(Exit::NotFound);
+    };
 
     match out_format {
         Format::Json => {
@@ -469,8 +488,8 @@ pub fn postal(project: &Project, country: &str, code: &str, out_format: Format) 
             // result and pass when the orderings differ.
             let area_ids: Vec<String> = hit.areas.iter().map(|(_, id)| jstr(id)).collect();
             emit(&format!(
-                "{{\"code\":{},\"country\":{},\"place\":{},\"placeId\":{},\"latitude\":{},\"longitude\":{},\
-                 \"areas\":[{}],\"areaIds\":[{}],\"areaCount\":{}}}",
+                "{{\"found\":true,\"code\":{},\"country\":{},\"place\":{},\"placeId\":{},\
+                 \"latitude\":{},\"longitude\":{},\"areas\":[{}],\"areaIds\":[{}],\"areaCount\":{}}}",
                 jstr(&hit.code),
                 jstr(&country.to_uppercase()),
                 jstr_opt(&hit.place_name),

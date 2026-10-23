@@ -133,6 +133,19 @@ final class ConformanceTests: XCTestCase {
                 throw TerraError.packageNotInstalled(country: country)
             }
             return place
+        case "capital":
+            // Resolved through the manifest rather than pinned as an id: the capital is a stable
+            // property of the country, while a geonamesid is not, and a fixture that pins an id
+            // fails for a reason that has nothing to do with conformance.
+            guard let capitalID = try package.database.first(
+                "SELECT capital_place_id FROM countries WHERE iso2 = ?1",
+                bindings: [.text(country)],
+                map: { $0.string(0) ?? "" }
+            ), !capitalID.isEmpty,
+            let place = try Hierarchy.place(id: capitalID, in: package) else {
+                throw TerraError.packageNotInstalled(country: country)
+            }
+            return place
         case "firstCity":
             guard let place = try package.database.first(
                 """

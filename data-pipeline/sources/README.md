@@ -72,6 +72,29 @@ wrong. The readers assert the count so a future format change fails loudly.
 endonym arrives through `alternateNames`, which is not yet ingested. See
 [`ARCHITECTURE.md` §13](../../ARCHITECTURE.md#13-open-questions).
 
+**No postal file for the United Kingdom.** `GB.zip` is served but empty of usable
+areas, and the build demotes to `level: "cities"` exactly as it does for Georgia.
+GB is the second country in the MVP set with this shape, which is worth knowing
+before a consumer asks why two of six countries answer `postalCode` with nothing.
+The manifest omits the `postal` feature, so `Terra.postalCodes(country: "GB")`
+returns an empty list and the CLI says so in JSON rather than staying silent.
+
+**Two British settlements have a latitude and no longitude.** Geonameid 2636714
+(Stratford) and 2637528 (Somersham) carry `51.53333`/`52.38333` with an empty
+longitude. They are absent from `places_rtree`, correctly: an R*Tree entry needs a
+box and half a point is not one. The validator reports them as a
+`partial-coordinates` warning rather than absorbing them, because the alternative
+is that "places with coordinates" quietly changes meaning from "latitude and
+longitude" to "latitude".
+
+**GeoNames' own names for the US and UK are `USA` and `UK`.** `countryInfo.txt`
+column 5 is the promoted display name, so `country("US").name` is `USA` and
+`country("GB").name` is `UK` — not `United States` and `United Kingdom`. Reported
+faithfully rather than curated, because the pipeline's job is to ingest what the
+source says and inventing a name is inventing data. A consumer that needs the
+long form has `localizedName(for: .english)`. Worth raising upstream: both are
+abbreviations where an address UI wants a name a person would write on an envelope.
+
 ## alternateNamesV2 — the largest source, and the most dangerous
 
 `alternateNamesV2.zip` is **205 MB compressed, 785 MB of text, 19 219 334 rows**, and it holds

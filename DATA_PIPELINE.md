@@ -204,3 +204,12 @@ in the same file.
 
 None of these are worked around silently. They are warned about, and where the correct
 behaviour is ambiguous the pipeline says which choice it made and why.
+
+## Source archive cache contract
+
+The downloader extracts only `cities500.txt` from the upstream ZIP and records the
+checksum and size of that extracted payload. Postal sources remain ZIP archives named
+`<ISO2>.zip`, as expected by the postal parser and offline builds. Both online and
+`--skip-download` builds repair legacy caches containing ZIP bytes in `cities500.txt`
+or a postal archive incorrectly named `<ISO2>.txt`. Archive member paths are never
+extracted to the filesystem.

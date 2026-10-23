@@ -87,6 +87,7 @@ class ValidationReport:
             ("Postal codes", "postal_codes"),
             ("Postal areas", "postal_areas"),
             ("Places with coordinates", "places_with_coords"),
+            ("Places with one coordinate only", "places_partial_coords"),
         ):
             count = self.stats.get(count_key, 0)
             mark = "✓" if count > 0 else "—"
@@ -268,8 +269,9 @@ def validate_build(build, country_iso2: str) -> ValidationReport:
 
     report.stats.setdefault("countries", 1)
     report.stats["places_with_coords"] = sum(
-        1 for p in build.places if p.latitude is not None
+        1 for p in build.places if p.latitude is not None and p.longitude is not None
     )
+    report.stats.setdefault("places_partial_coords", 0)
     report.stats["postal_codes"] = len(build.postal_codes)
     report.stats["postal_areas"] = len(build.postal_areas)
     # Settlements can sit at any level, so counts are by type (see render()).
@@ -321,8 +323,22 @@ def validate_package(db_path: Path) -> ValidationReport:
         report.stats["postal_codes"] = conn.execute(
             "SELECT COUNT(*) FROM postal_codes"
         ).fetchone()[0]
+        # Both coordinates, not one.
+        #
+        # `places_rtree` is populated only for places that have a latitude *and* a longitude,
+        # because an R*Tree entry needs a box and half a point is not one -- and because every
+        # `nearest` query filters on both. Counting latitude alone made the two disagree for the UK,
+        # where GeoNames publishes two settlements with a latitude and no longitude, and the
+        # `spatial-coverage` check then reported a false error on a package that was in fact complete.
         report.stats["places_with_coords"] = conn.execute(
-            "SELECT COUNT(*) FROM places WHERE latitude IS NOT NULL"
+            "SELECT COUNT(*) FROM places "
+            "WHERE latitude IS NOT NULL AND longitude IS NOT NULL"
+        ).fetchone()[0]
+        # Counted separately rather than absorbed, so a source that starts publishing half a point
+        # is visible as an anomaly instead of quietly changing what "with coordinates" means.
+        report.stats["places_partial_coords"] = conn.execute(
+            "SELECT COUNT(*) FROM places "
+            "WHERE (latitude IS NULL) <> (longitude IS NULL)"
         ).fetchone()[0]
         report.stats["postal_areas"] = conn.execute(
             "SELECT COUNT(*) FROM postal_areas"
@@ -369,8 +385,19 @@ def validate_package(db_path: Path) -> ValidationReport:
                 row["parent_id"] or "-",
             )
 
-        # R*Tree coverage: anything with coordinates must be in the spatial index,
-        # or `nearest` silently cannot find it.
+        # A place with only one coordinate cannot be located, so it is correctly absent from the
+        # spatial index -- but it is an upstream anomaly, and reporting it as a warning is what stops
+        # the count changing meaning without anyone noticing.
+        partial = report.stats.get("places_partial_coords", 0)
+        if partial:
+            report.add(
+                WARNING, "partial-coordinates",
+                f"{partial} places have a latitude but no longitude, or the reverse; they cannot "
+                "be found by a location query",
+            )
+
+        # R*Tree coverage: anything that has a full position must be in the spatial index, or
+        # `nearest` silently cannot find it.
         indexed = conn.execute("SELECT COUNT(*) FROM places_rtree").fetchone()[0]
         with_coords = report.stats["places_with_coords"]
         if indexed != with_coords:

@@ -326,6 +326,17 @@ class ConformanceTest {
                 map = Queries::place
             ) ?: fail("no country row for $code")
 
+            // Resolved through the manifest rather than pinned as an id: the capital is a stable
+            // property of the country, while a geonamesid is not.
+            "capital" -> {
+                val capitalId = pkg.database.first(
+                    "SELECT capital_place_id FROM countries WHERE iso2 = ?1",
+                    listOf(SqlValue.text(code)),
+                    map = { it.text(0) ?: "" }
+                ).orEmpty()
+                Hierarchy.placeById(capitalId, pkg) ?: fail("no capital place for $code")
+            }
+
             "firstCity" -> pkg.database.first(
                 """
                 SELECT ${Queries.PLACE_COLUMNS} FROM places p

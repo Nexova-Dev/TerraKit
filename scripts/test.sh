@@ -36,6 +36,9 @@ run_suite "phonetic conformance" \
 run_suite "pipeline unit tests" \
   python3 data-pipeline/tests/test_pipeline.py
 
+run_suite "source download and cache regression" \
+  python3 data-pipeline/tests/test_download.py
+
 run_suite "name ingestion" \
   python3 data-pipeline/tests/test_names.py
 

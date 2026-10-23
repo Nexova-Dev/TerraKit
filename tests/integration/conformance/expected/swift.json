@@ -1,6 +1,11 @@
 {
   "$comment" : "Produced by the Swift SDK for the queries the CLI does not expose (SDK_SPEC.md section 14). Kotlin is held to these. If a change here is intended, delete the file deliberately -- do not let a test run rewrite it.",
   "results" : {
+    "ancestors-gb-capital" : [
+      "country:GB",
+      "admin:GB-ENG",
+      "place:geonames:2643743"
+    ],
     "ancestors-province" : [
       "country:TR",
       "admin:TR-07"
@@ -37,6 +42,18 @@
       "place:geonames:306570",
       "place:geonames:316240",
       "place:geonames:298091"
+    ],
+    "nearest-new-york-us" : [
+      "admin:US-NY",
+      "place:geonames:5128581",
+      "place:geonames:5141365",
+      "place:geonames:8436473",
+      "place:geonames:5108135",
+      "place:geonames:5112540",
+      "place:geonames:5110309",
+      "place:geonames:6332479",
+      "place:geonames:5116093",
+      "place:geonames:8436479"
     ],
     "postal-by-city" : [
       "07010",

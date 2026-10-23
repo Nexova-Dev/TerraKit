@@ -3,11 +3,18 @@
   "batteryVersion": 1,
   "packages": [
     "terrakit-data-de-2026.10.1+a6c3",
+    "terrakit-data-gb-2026.10.1+e83e",
     "terrakit-data-ge-2026.11.0+f00d",
     "terrakit-data-jp-2026.10.1+a88a",
-    "terrakit-data-tr-2026.10.1+9920"
+    "terrakit-data-tr-2026.10.1+9920",
+    "terrakit-data-us-2026.10.1+b566"
   ],
   "results": {
+    "ancestors-gb-capital": {
+      "ids": [],
+      "unavailable": "no CLI equivalent for 'ancestors'",
+      "why": "SDK-only: the capital resolves through the manifest, so this covers the closure table at a depth no CLI command exposes"
+    },
     "ancestors-province": {
       "ids": [],
       "unavailable": "no CLI equivalent for 'ancestors'",
@@ -40,6 +47,19 @@
         "11957"
       ],
       "why": "Deutschland, and the capital is resolved"
+    },
+    "country-gb": {
+      "ids": [
+        "GB",
+        "GBR",
+        "UK",
+        "London",
+        "GBP",
+        "right",
+        "cities",
+        "6109"
+      ],
+      "why": "GeoNames publishes no postal file for the UK either, so the level is 'cities' and the manifest omits the postal feature"
     },
     "country-ge": {
       "ids": [
@@ -80,6 +100,19 @@
       ],
       "why": "the display name is T\u00fcrkiye, not GeoNames' English Turkey"
     },
+    "country-us": {
+      "ids": [
+        "US",
+        "USA",
+        "USA",
+        "Washington",
+        "USD",
+        "left",
+        "postal",
+        "24980"
+      ],
+      "why": "41 488 postal codes; the display name is GeoNames' own 'USA', promoted faithfully rather than curated, which is the pipeline's documented behaviour"
+    },
     "localized-tr-german": {
       "ids": [],
       "unavailable": "no CLI equivalent for 'localizedName'",
@@ -100,17 +133,33 @@
       "unavailable": "the CLI exposes no nearest query",
       "why": "haversine ordering computed in SDK code, from R*Tree candidates"
     },
+    "nearest-new-york-us": {
+      "ids": [],
+      "unavailable": "the CLI exposes no nearest query",
+      "why": "dense data: the R*Tree prefilter admits many candidates, and the haversine ordering in SDK code is what decides the answer"
+    },
     "postal-by-city": {
       "ids": [],
       "unavailable": "no CLI equivalent for 'postalCodes'",
       "why": "the reverse direction, spec section 18"
+    },
+    "postal-gb-absent": {
+      "fields": {
+        "areaCount": 0,
+        "code": "SW1A 1AA",
+        "country": "GB",
+        "primary": null
+      },
+      "ids": [],
+      "names": [],
+      "why": "a perfectly valid UK postcode in a package that has no postal data: the result must be empty, and the CLI must say so in JSON rather than staying silent"
     },
     "postal-multi-area": {
       "fields": {
         "areaCount": 2,
         "code": "07160",
         "country": "TR",
-        "primary": "Muratpa\u015fa \u0130l\u00e7esi"
+        "primary": "place:geonames:9535335"
       },
       "ids": [
         "place:geonames:9535335",
@@ -127,7 +176,7 @@
         "areaCount": 1,
         "code": "06160",
         "country": "TR",
-        "primary": "Ankara"
+        "primary": "admin:TR-68"
       },
       "ids": [
         "admin:TR-68"
@@ -136,6 +185,21 @@
         "Ankara"
       ],
       "why": "a code covering one place"
+    },
+    "postal-us": {
+      "fields": {
+        "areaCount": 1,
+        "code": "00501",
+        "country": "US",
+        "primary": "admin:US-NY"
+      },
+      "ids": [
+        "admin:US-NY"
+      ],
+      "names": [
+        "New York"
+      ],
+      "why": "a ZIP whose only area is a level-2 state: areas is a list, and primaryPlace must resolve to the state rather than to a settlement"
     },
     "search-antalya": {
       "ids": [
@@ -177,6 +241,21 @@
       ],
       "why": "a Japanese exonym in the Turkish package; dakuten must survive normalization"
     },
+    "search-london-gb": {
+      "ids": [
+        "place:geonames:2643743",
+        "place:geonames:2643734",
+        "place:geonames:2643738",
+        "place:geonames:2646003",
+        "place:geonames:2654789",
+        "place:geonames:2636503",
+        "place:geonames:2647425",
+        "place:geonames:2651817",
+        "place:geonames:2655775",
+        "place:geonames:2633866"
+      ],
+      "why": "the UK's level 2 is the constituent country, not the state, so the hierarchy below the capital is one level shallower than in T\u00fcrkiye or the US"
+    },
     "search-nonexistent": {
       "ids": [],
       "why": "an empty result set must be empty in every implementation, not an error"
@@ -187,6 +266,31 @@
         "place:geonames:9535335"
       ],
       "why": "the everyday form, with the Turkish \u015f; normalization section 8"
+    },
+    "search-springfield-us": {
+      "ids": [
+        "place:geonames:4409896",
+        "place:geonames:4951788",
+        "place:geonames:4250542",
+        "place:geonames:4525353",
+        "place:geonames:5754005",
+        "place:geonames:4561407",
+        "place:geonames:4659557",
+        "place:geonames:4787117",
+        "place:geonames:4173892",
+        "place:geonames:5104952",
+        "place:geonames:5010917",
+        "place:geonames:4224162",
+        "place:geonames:4309329",
+        "place:geonames:5048394",
+        "place:geonames:5241423",
+        "place:geonames:5079488",
+        "place:geonames:5139283",
+        "place:geonames:5232077",
+        "place:geonames:5440032",
+        "place:geonames:5093030"
+      ],
+      "why": "21 places share the name across 21 states; search_rank ties, so the order falls to the id tiebreak and a total order becomes the only thing standing between two implementations"
     },
     "search-three-char-cjk": {
       "ids": [

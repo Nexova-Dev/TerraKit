@@ -691,6 +691,50 @@ for command in "list" "doctor" "info $first_cc"; do
   assert_json "$command --json is valid JSON" "$payload"
 done
 
+# `postal` has two outcomes and both must speak JSON.
+#
+# It used to return Exit::NotFound from the query layer, which left the `--json` path with no way to
+# say anything: `postal TR 99999 --json` printed an empty stream and exited 4. A consumer parsing
+# stdout cannot tell that from a crash, and "not found" is an ordinary result rather than a failure.
+# The exit code still distinguishes the two, so a script can branch on either; what is asserted here
+# is that stdout carries a JSON record either way.
+#
+# Reuses the project from the install section, which already has a package.
+INSTALLED_DB="$WORK/ok-install/.terrakit/packages/$first_cc"
+INSTALLED_VERSION="$(ls "$INSTALLED_DB" 2>/dev/null | head -1)"
+if [[ -n "$INSTALLED_VERSION" && -f "$INSTALLED_DB/$INSTALLED_VERSION/data.sqlite" ]]; then
+  payload=$(in_project ok-install postal "$first_cc" "99999" --json 2>/dev/null || true)
+  assert_json "postal --json on a code that does not exist is valid JSON" "$payload"
+  if [[ "$payload" == *'"found":false'* ]]; then
+    ok "postal reports found:false rather than silence"
+  else
+    bad "postal did not report found:false: $payload"
+  fi
+
+  known="$(sqlite3 "$INSTALLED_DB/$INSTALLED_VERSION/data.sqlite" \
+    "SELECT code FROM postal_codes LIMIT 1" 2>/dev/null)"
+  if [[ -n "$known" ]]; then
+    payload=$(in_project ok-install postal "$first_cc" "$known" --json 2>/dev/null || true)
+    if [[ "$payload" == *'"found":true'* ]]; then
+      ok "postal reports found:true for a code that exists"
+    else
+      bad "postal did not report found:true: $payload"
+    fi
+    # `placeId` must be an id, not the place's name. It briefly held the name, and the conformance
+    # battery recorded that value as the expectation -- so the suite agreed with the bug instead of
+    # catching it, which is why the shape is asserted here and not only through the oracle.
+    if [[ "$payload" == *'"placeId":"place:'* || "$payload" == *'"placeId":"admin:'* ]]; then
+      ok "postal placeId is an id, not a name"
+    else
+      bad "postal placeId is not an id: $payload"
+    fi
+  else
+    printf '  (no postal codes in %s; placeId shape not checked)\n' "$first_cc"
+  fi
+else
+  printf '  (no installed package at %s; postal JSON contract not checked)\n' "$INSTALLED_DB"
+fi
+
 printf '\n\033[1m=== summary\033[0m\n'
 printf '  %s passed, %s failed\n' "$pass" "$fail"
 [[ "$fail" == "0" ]] || exit 1

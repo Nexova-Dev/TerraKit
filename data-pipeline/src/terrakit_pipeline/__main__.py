@@ -768,6 +768,7 @@ def _load_cached(
     out: dict[str, DownloadedSource] = {}
     for key, filename in wanted.items():
         path = cache_dir / filename
+        downloader.prepare_cache(SOURCES[key], path)
         if not path.exists():
             continue
         # A cached zip may be a saved HTTP error body (an earlier run before the

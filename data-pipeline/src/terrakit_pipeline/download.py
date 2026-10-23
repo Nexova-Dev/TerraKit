@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
+import zipfile
 import time
 import urllib.error
 import urllib.request
@@ -74,6 +76,7 @@ class Downloader:
         filename = spec.filename.format(iso2=iso2) if iso2 else spec.filename
         target = self.cache_dir / filename
 
+        self.prepare_cache(spec, target)
         if target.exists():
             # A cached file can be a saved error page: an interrupted or
             # pre-fix run may have written a 404 body to GE.zip, and treating
@@ -82,6 +85,7 @@ class Downloader:
             if target.name.endswith(".zip") and not _is_zip(target):
                 if optional:
                     target.unlink()
+                    return self.fetch(spec, iso2=iso2, optional=optional)
                 else:
                     raise RuntimeError(
                         f"cached file {target} is not a valid zip archive; "
@@ -142,16 +146,42 @@ class Downloader:
         # truncated file in the cache that a later run would treat as valid.
         temp = target.with_suffix(target.suffix + ".part")
         temp.write_bytes(data)
+        if spec.id == "geonames_cities500":
+            self.unpack_cities(temp)
+        elif filename.endswith(".zip") and not zipfile.is_zipfile(temp):
+            temp.unlink()
+            raise RuntimeError(f"downloaded source {url} is not a valid zip archive")
         temp.replace(target)
 
         return DownloadedSource(
             spec=spec,
             path=target,
-            sha256=hashlib.sha256(data).hexdigest(),
-            size=len(data),
+            sha256=self.sha256(target),
+            size=target.stat().st_size,
             retrieved_at=datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
             from_cache=False,
         )
+
+    @staticmethod
+    def unpack_cities(path: Path) -> None:
+        """Read only the expected member; never extract archive-controlled paths."""
+        extracted = path.with_suffix(path.suffix + ".unpacked")
+        try:
+            with zipfile.ZipFile(path) as archive:
+                with archive.open("cities500.txt") as source, extracted.open("wb") as dest:
+                    shutil.copyfileobj(source, dest)
+            extracted.replace(path)
+        finally:
+            extracted.unlink(missing_ok=True)
+
+    def prepare_cache(self, spec: SourceSpec, target: Path) -> None:
+        # Repair caches written by the old downloader, including offline builds.
+        if spec.id == "geonames_cities500" and target.exists() and _is_zip(target):
+            self.unpack_cities(target)
+        if spec.id == "geonames_postal" and not target.exists():
+            legacy = target.with_suffix(".txt")
+            if legacy.exists() and zipfile.is_zipfile(legacy):
+                legacy.replace(target)
 
     @staticmethod
     def sha256(path: Path) -> str:

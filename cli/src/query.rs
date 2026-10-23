@@ -548,18 +548,29 @@ pub struct PostalHit {
     pub areas: Vec<(String, String)>,
 }
 
-pub fn postal_code(conn: &Connection, country: &str, raw: &str) -> Result<PostalHit, Exit> {
+/// Look up one postal code.
+///
+/// Returns `Ok(None)` for "no such code", so the caller decides what that looks like in the output
+/// format. It used to return `Err(Exit::NotFound)` directly, which meant the `--json` path had no way
+/// to say so: `terrakit postal TR 99999 --json` printed **nothing** on stdout and exited 4. A
+/// consumer parsing JSON got an empty stream for a perfectly ordinary outcome, which it cannot
+/// distinguish from a crash.
+pub fn postal_code(conn: &Connection, country: &str, raw: &str) -> Result<Option<PostalHit>, Exit> {
     let normalized = crate::normalize::postal_normalize(raw);
     let country = country.to_uppercase();
 
-    let mut hit = conn
+    let hit = conn
         .query_row(
             "SELECT code, place_id, latitude, longitude FROM postal_codes \
              WHERE country_iso2 = ?1 AND code_norm = ?2",
             params![country, normalized],
             |row| {
-                let place_id: Option<String> = row.get(1)?;
-                let resolved: Option<(String, String)> = place_id.and_then(|id| {
+                // The id is the row's own column and the name and type are a lookup, so all three are
+                // kept. An earlier version copied `name` into `place_id`, which made `placeId` in
+                // `--json` hold "Muratpaşa İlçesi" -- and the conformance battery recorded that value
+                // as the expectation, so the suite agreed with the bug rather than catching it.
+                let raw_place_id: Option<String> = row.get(1)?;
+                let resolved: Option<(String, String)> = raw_place_id.as_ref().and_then(|id| {
                     conn.query_row(
                         "SELECT name, type FROM places WHERE id = ?1",
                         params![id],
@@ -568,7 +579,7 @@ pub fn postal_code(conn: &Connection, country: &str, raw: &str) -> Result<Postal
                     .ok()
                 });
                 let place_name = resolved.as_ref().map(|(name, _)| name.clone());
-                let place_id = resolved.as_ref().map(|(name, _)| name.clone());
+                let place_id = raw_place_id;
                 let place_type = resolved.map(|(_, kind)| kind);
                 Ok(PostalHit {
                     code: row.get(0)?,
@@ -581,7 +592,10 @@ pub fn postal_code(conn: &Connection, country: &str, raw: &str) -> Result<Postal
                 })
             },
         )
-        .map_err(|_| Exit::NotFound)?;
+        .ok();
+    let Some(mut hit) = hit else {
+        return Ok(None);
+    };
 
     // A code can cover several places — 6 in Türkiye span more than one district —
     // so `areas` is a list and `place_name` is only the primary. See
@@ -608,7 +622,7 @@ pub fn postal_code(conn: &Connection, country: &str, raw: &str) -> Result<Postal
         .flatten()
         .collect();
 
-    Ok(hit)
+    Ok(Some(hit))
 }
 
 /// Count of entities, for `doctor` and `validate`.

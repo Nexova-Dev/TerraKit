@@ -94,12 +94,11 @@ jobs:
           python-version: '3.12'
 
       - name: Build the packages the battery names
-        # TR, DE and JP, because the battery queries a Turkish province, a German capital and a
-        # Japanese prefecture -- including the CJK case where the trigram floor is visible. The
-        # cross-SDK comparison is worthless against a subset, so all three are built.
+        # Build all MVP countries plus Japan: the shared battery includes US/GB queries,
+        # and every implementation must read the same complete package set.
         run: |
           set -euo pipefail
-          for COUNTRY in TR DE JP; do
+          for COUNTRY in TR GE DE US GB JP; do
             echo "::group::$COUNTRY"
             PYTHONPATH=data-pipeline/src python3 -m terrakit_pipeline build \
               "$COUNTRY" \
@@ -153,7 +152,7 @@ jobs:
       - name: Build and validate every MVP country
         run: |
           set -euo pipefail
-          for COUNTRY in TR GE DE; do
+          for COUNTRY in TR GE DE US GB JP; do
             echo "::group::$COUNTRY"
             PYTHONPATH=data-pipeline/src python3 -m terrakit_pipeline build \
               "$COUNTRY" \

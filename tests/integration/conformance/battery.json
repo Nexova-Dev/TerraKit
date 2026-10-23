@@ -5,7 +5,7 @@
     "just counts'. A count matches while the order does not, which is the failure a count-based",
     "check cannot see and a user experiences as 'why is the right answer fourth'.",
     "",
-    "expected/*.json is produced by the Rust CLI, which is the reference implementation:",
+    "expected/cli.json is produced by the Rust CLI, which is the reference implementation:",
     "  tools/conformance.py --generate --packages <dir>",
     "",
     "The battery covers the cases that actually differ between implementations:",
@@ -15,7 +15,11 @@
     "- CJK, where the trigram tokenizer's three-character floor is visible",
     "- hierarchy depth, which is level-specific and differs per country",
     "- postal codes covering several places",
-    "- nearest, where the R*Tree is a prefilter and the ordering is SDK code"
+    "- nearest, where the R*Tree is a prefilter and the ordering is SDK code",
+    "- and now two countries whose data model is not Türkiye's: the United States, where 21 places",
+    "  share one name and 41 488 ZIP codes hang off a three-level hierarchy, and the United",
+    "  Kingdom, whose level 2 is the constituent country rather than the state and for which",
+    "  GeoNames publishes no postal file at all"
   ],
   "version": 1,
   "queries": [
@@ -215,6 +219,64 @@
       "place": "country",
       "language": "de",
       "why": "Türkei"
+    },
+    {
+      "id": "search-springfield-us",
+      "op": "search",
+      "query": "Springfield",
+      "country": "US",
+      "limit": 20,
+      "why": "21 places share the name across 21 states; search_rank ties, so the order falls to the id tiebreak and a total order becomes the only thing standing between two implementations"
+    },
+    {
+      "id": "country-us",
+      "op": "country",
+      "country": "US",
+      "why": "41 488 postal codes; the display name is GeoNames' own 'USA', promoted faithfully rather than curated, which is the pipeline's documented behaviour"
+    },
+    {
+      "id": "postal-us",
+      "op": "postalCode",
+      "code": "00501",
+      "country": "US",
+      "why": "a ZIP whose only area is a level-2 state: areas is a list, and primaryPlace must resolve to the state rather than to a settlement"
+    },
+    {
+      "id": "nearest-new-york-us",
+      "op": "nearest",
+      "latitude": 40.7128,
+      "longitude": -74.006,
+      "country": "US",
+      "limit": 10,
+      "why": "dense data: the R*Tree prefilter admits many candidates, and the haversine ordering in SDK code is what decides the answer"
+    },
+    {
+      "id": "search-london-gb",
+      "op": "search",
+      "query": "London",
+      "country": "GB",
+      "limit": 10,
+      "why": "the UK's level 2 is the constituent country, not the state, so the hierarchy below the capital is one level shallower than in Türkiye or the US"
+    },
+    {
+      "id": "country-gb",
+      "op": "country",
+      "country": "GB",
+      "why": "GeoNames publishes no postal file for the UK either, so the level is 'cities' and the manifest omits the postal feature"
+    },
+    {
+      "id": "ancestors-gb-capital",
+      "op": "ancestors",
+      "country": "GB",
+      "place": "capital",
+      "why": "SDK-only: the capital resolves through the manifest, so this covers the closure table at a depth no CLI command exposes"
+    },
+    {
+      "id": "postal-gb-absent",
+      "op": "postalCode",
+      "code": "SW1A 1AA",
+      "country": "GB",
+      "why": "a perfectly valid UK postcode in a package that has no postal data: the result must be empty, and the CLI must say so in JSON rather than staying silent"
     }
   ]
 }

@@ -50,7 +50,9 @@ No API key. No network call. No geographic database to build and maintain.
 
 ## Status
 
-**Pre-MVP. Architecture defined, implementation not started.**
+**MVP implementation exists; release verification is in progress.**
+
+See [ROADMAP.md](ROADMAP.md) for remaining work and release acceptance criteria.
 
 | Area | State |
 |---|---|
@@ -66,7 +68,7 @@ No API key. No network call. No geographic database to build and maintain.
 | Registry | **working** — static `index.json` on object storage, Ed25519-signed releases |
 | Swift SDK | built, 25 tests, conformance against the CLI |
 | Kotlin SDK | built (JVM + Android), 41 tests, conformance against CLI **and** Swift |
-| Registry | static layout specified, not hosted |
+| Production hosting | deployment not verified |
 
 ### Packages built from live data
 
@@ -302,7 +304,7 @@ disagrees with them is a bug.
 
 ## Design commitments
 
-These are enforced, not aspirational. Each links to the decision that makes it real.
+These are design commitments. Implementation and remaining verification are tracked in ROADMAP.md.
 
 1. **Offline-first.** The SDK opens a read-only SQLite file. It is the only data source it has, and no
    query path has a network fallback branch.
@@ -316,8 +318,8 @@ These are enforced, not aspirational. Each links to the decision that makes it r
 4. **Compute once, at build time.** Normalization, deduplication, hierarchy construction, validation
    and indexing all happen in the pipeline. SDKs are query engines.
    ([§1](ARCHITECTURE.md#1-architecture-in-one-paragraph))
-5. **Never load a dataset into memory.** Indexed queries, keyset pagination, hard result caps, and an
-   enforced memory ceiling in CI. (§41)
+5. **Never load a dataset into memory.** Indexed queries, keyset pagination, hard result caps, and a
+   planned memory ceiling check in CI. (§41)
 6. **Verifiable by construction.** SHA-256 plus Ed25519 signatures, verified before extraction and
    again after, with atomic install and fail-closed behaviour.
    ([§5](PACKAGE_FORMAT.md#5-integrity))

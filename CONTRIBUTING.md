@@ -70,8 +70,8 @@ Follow it. Work out of sequence creates work for everyone else.
 7. cli/                  install from a GitHub source                        done
 8. sdk/swift/            query engine over the produced package               done
 9. sdk/kotlin/           same surface, conformance-tested against Swift     done
-10. Remaining countries  US, GB                                            next
-11. search depth         autocomplete ranking, boundary polygons
+10. All MVP countries    US/GB ingestion exists; six-country CI verification pending
+11. Release verification performance, memory, distribution, examples (ROADMAP.md)
 ```
 
 The registry came before the remaining CLI commands because they cannot be built or tested without
@@ -160,9 +160,9 @@ Any divergence between implementations is a defect in the one that deviates from
 
 ### 5.3 Performance
 
-`bench/` measures against the reference fixture. CI fails when p95 exceeds the budgets in §40 of the
-specification — 10 ms lookup, 50 ms indexed search, 100 ms autocomplete — and when a memory ceiling
-test exceeds its documented bound.
+Planned release gate (not implemented yet): benchmarks against a reference fixture and CI limits
+for p95 latency — 10 ms lookup, 50 ms indexed search, 100 ms autocomplete — plus a documented
+memory ceiling. See [ROADMAP.md](ROADMAP.md).
 
 A performance regression is a bug with a number attached. "It got slower" needs a measurement and a
 justified threshold change, not a shrug.
