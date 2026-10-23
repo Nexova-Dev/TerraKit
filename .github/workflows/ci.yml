@@ -87,7 +87,7 @@ jobs:
       - name: Normalization conformance
         # Needs no packages, so it is the half that must pass on every push. It is what proves the
         # SDK agrees with core/spec/normalization.md rather than merely resembling it.
-        run: cd sdk/swift && swift test --filter Normalization
+        run: swift test --filter Normalization
 
       - uses: actions/setup-python@v5
         with:

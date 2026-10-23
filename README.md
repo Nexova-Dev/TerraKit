@@ -137,6 +137,23 @@ $ echo $?
 3
 ```
 
+### Add the Swift SDK in Xcode
+
+Use **File → Add Package Dependencies** with
+`https://github.com/Nexova-Dev/TerraKit.git`, select **Branch**, enter `main`,
+and add the **TerraKit** library to your application target. The root `Package.swift`
+exposes the Swift SDK from this monorepo. Requires Swift 6.0, iOS 16+ or macOS 13+.
+
+No versioned release is published yet; a requirement starting at `1.0.0` cannot resolve.
+For a Swift package consumer:
+
+```swift
+.package(url: "https://github.com/Nexova-Dev/TerraKit.git", branch: "main")
+```
+
+Then add `.product(name: "TerraKit", package: "TerraKit")` to your target dependencies.
+Geographic data is installed and bundled separately; adding the SDK does not download datasets.
+
 ### Installing
 
 `add` resolves the version, verifies the signature **before** fetching any bytes, checks free space,

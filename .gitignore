@@ -7,7 +7,7 @@ cli/target/
 # `.build/` is SPM's scratch directory and holds ~2400 files on a single `swift test`. Ignoring the
 # directory rather than naming files inside it: SPM adds new subdirectories between releases, and a
 # pattern list goes stale silently.
-sdk/swift/.build/
+.build/
 .swiftpm/
 Package.resolved
 
