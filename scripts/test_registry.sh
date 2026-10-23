@@ -97,6 +97,17 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Each run owns its signing key and isolated trust configuration.
+python3 tools/generate_dev_key.py --out "$WORK/test-key.pem" >/dev/null
+export TERRAKIT_CONFIG="$WORK/config.toml"
+python3 - "$WORK/test-key.pub" "$TERRAKIT_CONFIG" <<'PYKEY'
+import json, pathlib, sys
+key = json.loads(pathlib.Path(sys.argv[1]).read_text())
+pathlib.Path(sys.argv[2]).write_text(
+    '[[keys]]\nid = "terrakit-dev-2026"\npublicKey = "' + key['publicKey'] + '"\n'
+)
+PYKEY
+
 printf '\033[1m=== building packages\033[0m\n'
 for cc in $PKGS; do
   printf '  %s... ' "$cc"
@@ -109,7 +120,7 @@ for cc in $PKGS; do
   [[ -n "$dir" ]] || { bad "build $cc produced no output"; exit 1; }
 
   PYTHONPATH=data-pipeline/src python3 -m terrakit_pipeline publish "$dir" \
-    --sign-key keys/dev-ed25519.pem --sign-key-id terrakit-dev-2026 >/dev/null
+    --sign-key "$WORK/test-key.pem" --sign-key-id terrakit-dev-2026 >/dev/null
   printf 'published %s\n' "$(basename "$dir")"
 done
 
@@ -232,7 +243,7 @@ assert_contains "not trusted" "the refusal names the reason" \
   bash -c "cd '$WORK/rogue' && '$BIN' add $first_cc --registry 'file://$WORK/reg-rogue' --cache-dir '$WORK/cache6'"
 
 printf '\n\033[1m=== publishing guards\033[0m\n'
-# --production must refuse packages signed with the committed development key. Without this the
+# --production must refuse packages signed with the temporary development key. Without this the
 # guarantee is asserted in the documentation and tested nowhere, which is not a guarantee.
 set +e
 prod_output=$(python3 tools/build_registry.py "$WORK/releases" --out "$WORK/registry-prod" \
@@ -300,7 +311,7 @@ manifest["version"] = version
 path.write_text(json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False) + "\n")
 PYEOF
 PYTHONPATH=data-pipeline/src python3 -m terrakit_pipeline publish "$second_release" \
-  --sign-key keys/dev-ed25519.pem --sign-key-id terrakit-dev-2026 >/dev/null
+  --sign-key "$WORK/test-key.pem" --sign-key-id terrakit-dev-2026 >/dev/null
 
 python3 tools/build_registry.py "$WORK/releases" --out "$WORK/registry-v2" \
   --base-url https://registry.invalid >/dev/null

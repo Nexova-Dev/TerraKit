@@ -51,10 +51,9 @@ impl KeySource {
 
 /// The committed development public key.
 ///
-/// Matches `keys/dev-ed25519.pub`. The private half is committed too, which is exactly why a
-/// signature from this key must never be treated as proof of provenance in a release context —
-/// `tools/build_registry.py --production` refuses to publish it, and this constant is the
-/// other half of that arrangement.
+/// Matches the legacy public fixture `keys/dev-ed25519.pub`. No private key is shipped.
+/// Registry tests override this public key through an isolated configuration.
+/// Production publishing rejects the development key ID.
 pub const DEV_KEY_ID: &str = "terrakit-dev-2026";
 pub const DEV_PUBLIC_KEY: &str = "4c16e2e2a4c0c57ebe4fe3484c69a7ba61577a22df6e3ec757c376d54f2cdf7b";
 

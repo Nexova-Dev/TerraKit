@@ -532,7 +532,7 @@ else, and refuses a package signed by a key it does not hold. Trust comes from t
 
 | Source | Purpose |
 |---|---|
-| compiled-in `terrakit-dev-2026` | the committed development keypair, so a fresh clone can exercise the whole path |
+| compiled-in `terrakit-dev-2026` | legacy public test fixture; registry tests override it with a temporary key |
 | `~/.config/terrakit/config.toml` | keys the user trusts, for mirrors and self-hosted datasets |
 
 ```toml
@@ -544,9 +544,10 @@ publicKey = "6adea55640f359c037d544bbb0d21665441017c13cbb0bd0a5b2126a4927f5c4"
 The document's own `publicKey` field is informational. The decision is made against the keyring,
 because a package that supplied and named its own key would otherwise be verified against itself.
 
-The development key's private half is committed, which is the point: `--production` refuses to
-publish anything signed with it, so a committed key can only make a package look signed to a
-developer who is already exercising the test path.
+Private keys are never committed. The registry test creates a temporary keypair and
+trusts its public half through an isolated `TERRAKIT_CONFIG`. `--production` refuses
+the development key ID. Generate local development keys with
+`python3 tools/generate_dev_key.py --out /private/local/path/test-key.pem`.
 
 The static registry needs no authentication and no rate limiting for read paths, which is most of
 §39's concerns removed before they exist. The dynamic API in [`API_SPEC.md`](API_SPEC.md) is only

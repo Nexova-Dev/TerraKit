@@ -1,24 +1,9 @@
 #!/usr/bin/env python3
-"""
-Generate an Ed25519 keypair for signing packages.
+"""Generate a local Ed25519 development keypair; never commit private keys.
 
-Two kinds of key exist and conflating them is the failure this script is built to prevent:
-
-* **development key** — generated here, committed to the repository, used by the test suite and
-  by anyone who wants to exercise the verification path from a fresh clone. It is not a secret.
-* **release key** — generated offline, on hardware that never runs the pipeline, and never
-  committed. Its secret half never touches a machine with network access.
-
-`tools/build_registry.py --production` refuses to publish anything signed with the development
-key, and the CLI ships the development public key only. So the worst a committed key can do is
-make a package look signed to a developer — it cannot make one look signed to a user who has a
-real release key.
-
-Usage
------
-    tools/generate_dev_key.py                      # write the development pair
-    tools/generate_dev_key.py --out key.pem        # write an UNCOMMITTED keypair
-    tools/generate_dev_key.py --print-public       # show the public key of the dev pair
+Usage: tools/generate_dev_key.py --out /private/local/path/test-key.pem
+The public companion uses the development key ID and must be explicitly trusted
+through TERRAKIT_CONFIG. Production publication rejects this development key ID.
 """
 
 from __future__ import annotations
@@ -30,9 +15,9 @@ import sys
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
-#: Where the development keypair lives. Committed on purpose; see the module docstring.
-DEV_PRIVATE_KEY = REPO_ROOT / "keys" / "dev-ed25519.pem"
-DEV_PUBLIC_KEY = REPO_ROOT / "keys" / "dev-ed25519.pub"
+#: Local defaults live in the ignored cache, outside tracked fixtures.
+DEV_PRIVATE_KEY = REPO_ROOT / ".cache" / "keys" / "dev-ed25519.pem"
+DEV_PUBLIC_KEY = REPO_ROOT / ".cache" / "keys" / "dev-ed25519.pub"
 
 #: The key id the registry and the CLI keyring use for the development key.
 DEV_KEY_ID = "terrakit-dev-2026"
@@ -67,7 +52,7 @@ def generate(private_path: pathlib.Path, public_path: pathlib.Path) -> str:
                 "keyId": DEV_KEY_ID,
                 "publicKey": public_raw.hex(),
                 "note": (
-                    "Development key. Not a secret. "
+                    "Local development public key. "
                     "tools/build_registry.py --production refuses packages signed with it."
                 ),
             },
@@ -87,7 +72,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--out",
         type=pathlib.Path,
-        help="write the private key here INSTEAD of the committed development key",
+        help="write the private key to this local path",
     )
     parser.add_argument(
         "--print-public",
@@ -114,7 +99,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     public_hex = generate(DEV_PRIVATE_KEY, DEV_PUBLIC_KEY)
-    print(f"development private key: {DEV_PRIVATE_KEY} (committed on purpose)")
+    print(f"development private key: {DEV_PRIVATE_KEY} (local only; never commit)")
     print(f"development public key:  {DEV_PUBLIC_KEY}")
     print(f"keyId:                   {DEV_KEY_ID}")
     print(f"publicKey:               {public_hex}")

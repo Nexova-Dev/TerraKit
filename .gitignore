@@ -11,10 +11,8 @@ sdk/swift/.build/
 .swiftpm/
 Package.resolved
 
-# The development keypair IS committed on purpose -- see PACKAGE_FORMAT.md section 11.
-# Only real release keys are ignored, because losing one is recoverable and leaking one is not.
+# Private signing keys must never be committed, including development keys.
 *.pem
-!keys/dev-ed25519.pem
 
 # Local caches and scratch
 .cache/

@@ -188,7 +188,7 @@ tools/build_registry.py datasets/ --out registry/ \
   --upload aws:s3://my-bucket/terrakit --production
 ```
 
-`--production` refuses anything signed with the committed development key. That guarantee is
+`--production` refuses anything signed with the development key ID. That guarantee is
 tested, not just documented: [`scripts/test_registry.sh`](scripts/test_registry.sh) is 90 checks
 covering registry install, update, remove, cache listing, verification and pruning, mobile bundling,
 GitHub install, hostile archives, unsigned packages, damage detection and repair, idempotency,

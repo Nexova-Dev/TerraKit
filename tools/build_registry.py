@@ -56,7 +56,7 @@ sys.path.insert(0, str(REPO_ROOT / "data-pipeline" / "src"))
 
 from terrakit_pipeline import release  # noqa: E402
 
-#: Key id of the committed development key. Packages signed with it are refused by --production.
+#: Key id of the development key ID. Packages signed with it are refused by --production.
 DEV_KEY_ID = release.DEV_KEY_ID
 
 #: Suffix appended to a dataset version to make it a path segment.
@@ -489,7 +489,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--production",
         action="store_true",
-        help="refuse packages signed with the committed development key, and require a signature",
+        help="refuse packages signed with the development key ID, and require a signature",
     )
     parser.add_argument("--dry-run", action="store_true", help="verify only; write nothing")
 
@@ -507,9 +507,7 @@ def main(argv: list[str] | None = None) -> int:
             names = ", ".join(sorted(e["name"] for e in dev_signed))
             print(
                 f"error: refusing to publish development-signed packages: {names}\n"
-                f"    The development key is committed to the repository, so its private half is "
-                f"public. A package signed with it would look verified to anyone who read this "
-                f"repository.\n"
+                f"    Development keys are for local tests only, never production releases.\n"
                 f"    Sign with the release key: terrakit-pipeline publish <dir> "
                 f"--sign-key <release-key> --sign-key-id <release-id>",
                 file=sys.stderr,
